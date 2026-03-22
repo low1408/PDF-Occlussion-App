@@ -1,6 +1,6 @@
 :root {
   --bg-color: #f4f6f8;
-  --toolbar-bg: #2d3748;
+  --toolbar-bg: #1e293b;
   --text-color: #333;
 }
 
@@ -58,30 +58,79 @@ body {
 }
 
 .toolbar {
-  height: 50px;
+  min-height: 50px;
   background-color: var(--toolbar-bg);
   color: white;
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 20px;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
   z-index: 100;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 .toolbar-title {
   font-weight: 600;
+  font-size: 0.95rem;
+}
+
+/* Mode toggle controls */
+.mode-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.mode-btn {
+  background: #334155;
+  border: 1px solid #475569;
+  color: #e2e8f0;
+  padding: 6px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: all 0.2s;
+}
+
+.mode-btn:hover {
+  background: #475569;
+}
+
+.mode-btn.active {
+  background: #4f46e5;
+  border-color: #6366f1;
+  color: white;
+}
+
+/* Draw mode banner */
+.draw-mode-banner {
+  background: linear-gradient(90deg, #4f46e5, #7c3aed);
+  color: white;
+  text-align: center;
+  padding: 6px 16px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+}
+
+.draw-mode-banner kbd {
+  background: rgba(255, 255, 255, 0.2);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-family: monospace;
+  font-size: 0.9em;
 }
 
 .zoom-controls {
   display: flex;
   align-items: center;
-  gap: 15px;
+  gap: 12px;
 }
 
 .zoom-controls button {
-  background: #4a5568;
-  border: none;
+  background: #334155;
+  border: 1px solid #475569;
   color: white;
   padding: 4px 12px;
   border-radius: 4px;
@@ -91,7 +140,7 @@ body {
 }
 
 .zoom-controls button:hover {
-  background: #718096;
+  background: #475569;
 }
 
 .pdf-pages-container {
@@ -105,33 +154,105 @@ body {
 }
 
 .pdf-page-wrapper {
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1), 0 1px 3px rgba(0,0,0,0.08);
+  position: relative;
+  background-color: white;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1), 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 
-.history-controls, .share-controls {
+.history-controls,
+.share-controls {
   display: flex;
-  gap: 10px;
+  gap: 8px;
 }
 
-.history-controls button, .share-controls button, .import-btn {
-  background: #4a5568;
-  border: none;
+.history-controls button,
+.share-controls button,
+.import-btn {
+  background: #334155;
+  border: 1px solid #475569;
   color: white;
   padding: 6px 12px;
   border-radius: 4px;
   cursor: pointer;
-  font-size: 0.9rem;
+  font-size: 0.85rem;
   transition: background 0.2s;
   display: inline-block;
   line-height: normal;
 }
 
 .history-controls button:disabled {
-  background: #2d3748;
-  color: #718096;
+  background: #1e293b;
+  color: #475569;
+  border-color: #334155;
   cursor: not-allowed;
 }
 
-.history-controls button:hover:not(:disabled), .share-controls button:hover, .import-btn:hover {
-  background: #718096;
+.history-controls button:hover:not(:disabled),
+.share-controls button:hover,
+.import-btn:hover {
+  background: #475569;
+}
+
+/* Dark Mode (CSS Filter Inversion on Canvas) */
+.dark-mode .pdf-pages-container {
+  background-color: #1a1a2e;
+}
+
+.dark-mode .pdf-page-wrapper {
+  background-color: #1a1a2e;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.5);
+}
+
+.dark-canvas {
+  filter: invert(1) hue-rotate(180deg);
+}
+
+/* SRS Grading Buttons */
+.srs-grade-bar {
+  animation: fadeInUp 0.15s ease-out;
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+.srs-btn {
+  border: none;
+  color: white;
+  padding: 6px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 600;
+  transition: transform 0.15s ease, filter 0.15s ease;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+.srs-btn:hover {
+  transform: scale(1.08);
+  filter: brightness(1.15);
+}
+
+.srs-easy {
+  background: #22c55e;
+}
+
+.srs-ok {
+  background: #3b82f6;
+}
+
+.srs-hard {
+  background: #f59e0b;
+}
+
+.srs-impossible {
+  background: #ef4444;
 }

@@ -32,14 +32,14 @@ interface State {
   boxes: Box[];
   history: Box[][];
   historyIndex: number;
-  
+
   loadBoxesForDocument: (documentId: string) => Promise<void>;
   addBox: (box: Box) => void;
   updateBox: (id: string, updates: Partial<Box>) => void;
   deleteBox: (id: string) => void;
   undo: () => void;
   redo: () => void;
-  
+
   _saveToIDB: (boxesToSave: Box[]) => Promise<void>;
 }
 
@@ -70,14 +70,14 @@ export const useOcclusionStore = create<State>((set, get) => ({
       const newBoxes = [...state.boxes, box];
       const newHistory = state.history.slice(0, state.historyIndex + 1);
       newHistory.push(newBoxes);
-      if (newHistory.length > 10) newHistory.shift(); 
-      
+      if (newHistory.length > 10) newHistory.shift();
+
       get()._saveToIDB([box]);
-      
-      return { 
-        boxes: newBoxes, 
-        history: newHistory, 
-        historyIndex: newHistory.length - 1 
+
+      return {
+        boxes: newBoxes,
+        history: newHistory,
+        historyIndex: newHistory.length - 1
       };
     });
   },
@@ -97,7 +97,7 @@ export const useOcclusionStore = create<State>((set, get) => ({
       const newHistory = state.history.slice(0, state.historyIndex + 1);
       newHistory.push(newBoxes);
       if (newHistory.length > 10) newHistory.shift();
-      
+
       get()._saveToIDB([updatedBox]);
 
       return {

@@ -7,9 +7,11 @@ interface PdfPageProps {
   pdfDocument: pdfjsLib.PDFDocumentProxy;
   scale: number;
   fileHash: string;
+  drawMode: boolean;
+  darkMode: boolean;
 }
 
-export default function PdfPage({ pageIndex, pdfDocument, scale, fileHash }: PdfPageProps) {
+export default function PdfPage({ pageIndex, pdfDocument, scale, fileHash, drawMode, darkMode }: PdfPageProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [isVisible, setIsVisible] = useState(false);
@@ -19,7 +21,7 @@ export default function PdfPage({ pageIndex, pdfDocument, scale, fileHash }: Pdf
   useEffect(() => {
     const observer = new IntersectionObserver(([entry]) => {
       setIsVisible(entry.isIntersecting);
-    }, { rootMargin: '100% 0px' }); // Load 1 viewport worth of pages ahead
+    }, { rootMargin: '100% 0px' });
 
     if (containerRef.current) observer.observe(containerRef.current);
     return () => observer.disconnect();
@@ -50,7 +52,6 @@ export default function PdfPage({ pageIndex, pdfDocument, scale, fileHash }: Pdf
 
       try {
         pageProxy = await pdfDocument.getPage(pageIndex);
-        // Single source of truth: PDF.js generates viewport with correct translation for rotation
         const vp = pageProxy.getViewport({ scale, rotation: pageProxy.rotate || 0 });
         setViewport(vp);
 
@@ -58,7 +59,6 @@ export default function PdfPage({ pageIndex, pdfDocument, scale, fileHash }: Pdf
         const ctx = canvas.getContext('2d', { alpha: false });
         if (!ctx) return;
 
-        // DevicePixelRatio for high-res screens
         const outputScale = window.devicePixelRatio || 1;
         canvas.width = Math.floor(vp.width * outputScale);
         canvas.height = Math.floor(vp.height * outputScale);
@@ -102,11 +102,17 @@ export default function PdfPage({ pageIndex, pdfDocument, scale, fileHash }: Pdf
       style={{ 
         width: viewport ? `${viewport.width}px` : '100%', 
         height: viewport ? `${viewport.height}px` : '800px',
+        position: 'relative',
       }}
     >
-      {isVisible && <canvas ref={canvasRef} />}
+      {isVisible && (
+        <canvas
+          ref={canvasRef}
+          className={darkMode ? 'dark-canvas' : ''}
+        />
+      )}
       {isVisible && viewport && (
-        <OcclusionLayer viewport={viewport} pageIndex={pageIndex} fileHash={fileHash} />
+        <OcclusionLayer viewport={viewport} pageIndex={pageIndex} fileHash={fileHash} drawMode={drawMode} />
       )}
     </div>
   );
