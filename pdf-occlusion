@@ -1,0 +1,45 @@
+#!/bin/bash
+
+# Move to the directory where the script is located
+cd "$(dirname "$0")"
+
+echo "Starting PDF Occlusion Engine..."
+
+# Start the Node.js backend server in the background
+echo "Starting Backend (Port 3000)..."
+cd backend
+npm start &
+BACKEND_PID=$!
+cd ..
+
+# Start the React/Vite frontend server in the background
+echo "Starting Frontend (Vite)..."
+cd frontend
+npm run dev -- --host &
+FRONTEND_PID=$!
+cd ..
+
+# Wait for 3 seconds to let the Vite server spin up
+sleep 3
+
+# Automatically open the default web browser to the Vite server
+echo "Opening browser..."
+if command -v xdg-open > /dev/null; then
+  xdg-open "http://localhost:5173"
+elif command -v open > /dev/null; then
+  open "http://localhost:5173"
+else
+  echo "Could not detect web browser. Please navigate to http://localhost:5173 manually."
+fi
+
+echo ""
+echo "================================================="
+echo "PDF Occlusion Engine is now running!"
+echo "Press Ctrl+C in this terminal to stop the servers."
+echo "================================================="
+
+# Trap termination signals to shut down both servers cleanly
+trap "echo -e '\nStopping PDF Occlusion servers...'; kill $BACKEND_PID $FRONTEND_PID; exit 0" SIGINT SIGTERM
+
+# Keep the script running
+wait
