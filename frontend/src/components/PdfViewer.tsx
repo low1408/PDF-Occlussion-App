@@ -103,7 +103,7 @@ export default function PdfViewer({ fileData, fileHash }: PdfViewerProps) {
         const pdf = await loadingTask.promise;
         setPdfDocument(pdf);
         setNumPages(pdf.numPages);
-        
+
         const out = await pdf.getOutline();
         setOutline(out || []);
       } catch (e) {
@@ -191,13 +191,13 @@ export default function PdfViewer({ fileData, fileHash }: PdfViewerProps) {
       <div className="pdf-layout">
         <div className="sidebar">
           <div className="sidebar-tabs">
-            <button 
+            <button
               className={`sidebar-tab ${activeTab === 'chapters' ? 'active' : ''}`}
               onClick={() => setActiveTab('chapters')}
             >
               Chapters
             </button>
-            <button 
+            <button
               className={`sidebar-tab ${activeTab === 'bookmarks' ? 'active' : ''}`}
               onClick={() => setActiveTab('bookmarks')}
             >
