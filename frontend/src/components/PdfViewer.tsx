@@ -20,6 +20,10 @@ export default function PdfViewer({ fileData, fileHash }: PdfViewerProps) {
   const [darkMode, setDarkMode] = useState<boolean>(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  const [outline, setOutline] = useState<any[]>([]);
+  const [activeTab, setActiveTab] = useState<'chapters' | 'bookmarks'>('chapters');
+  const bookmarks = useOcclusionStore(state => state.bookmarks);
+
   const undo = useOcclusionStore(state => state.undo);
   const redo = useOcclusionStore(state => state.redo);
   const addBox = useOcclusionStore(state => state.addBox);
@@ -99,12 +103,46 @@ export default function PdfViewer({ fileData, fileHash }: PdfViewerProps) {
         const pdf = await loadingTask.promise;
         setPdfDocument(pdf);
         setNumPages(pdf.numPages);
+        
+        const out = await pdf.getOutline();
+        setOutline(out || []);
       } catch (e) {
         console.error("Error loading PDF", e);
       }
     };
     loadPdf();
   }, [fileData]);
+
+  const scrollToPage = async (dest: any, pageIndex?: number) => {
+    let targetIndex = pageIndex;
+    if (dest && pdfDocument) {
+      let destArray = dest;
+      if (typeof dest === 'string') {
+        destArray = await pdfDocument.getDestination(dest);
+      }
+      if (Array.isArray(destArray)) {
+        try {
+          const ref = destArray[0];
+          targetIndex = await pdfDocument.getPageIndex(ref) + 1; // 0-based to 1-based
+        } catch (e) {
+          console.error("Could not resolve destination string/ref", e);
+        }
+      }
+    }
+    if (targetIndex && containerRef.current) {
+      const el = containerRef.current.children[targetIndex - 1];
+      if (el) el.scrollIntoView({ behavior: 'smooth' });
+    }
+  };
+
+  const renderOutline = (items: any[]) => items.map((item, idx) => (
+    <div key={idx} style={{ paddingLeft: '10px' }}>
+      <div className="toc-item" onClick={() => scrollToPage(item.dest)}>
+        {item.title}
+      </div>
+      {item.items && item.items.length > 0 && renderOutline(item.items)}
+    </div>
+  ));
 
   if (!pdfDocument) {
     return <div className="loading">Loading PDF...</div>;
@@ -150,18 +188,48 @@ export default function PdfViewer({ fileData, fileHash }: PdfViewerProps) {
           DRAW MODE ACTIVE — Click and drag to create occlusions. Press <kbd>D</kbd> to switch back to Review Mode.
         </div>
       )}
-      <div className="pdf-pages-container" ref={containerRef}>
-        {Array.from({ length: numPages }).map((_, i) => (
-          <PdfPage
-            key={i + 1}
-            pageIndex={i + 1}
-            pdfDocument={pdfDocument}
-            scale={zoom}
-            fileHash={fileHash}
-            drawMode={drawMode}
-            darkMode={darkMode}
-          />
-        ))}
+      <div className="pdf-layout">
+        <div className="sidebar">
+          <div className="sidebar-tabs">
+            <button 
+              className={`sidebar-tab ${activeTab === 'chapters' ? 'active' : ''}`}
+              onClick={() => setActiveTab('chapters')}
+            >
+              Chapters
+            </button>
+            <button 
+              className={`sidebar-tab ${activeTab === 'bookmarks' ? 'active' : ''}`}
+              onClick={() => setActiveTab('bookmarks')}
+            >
+              Bookmarks
+            </button>
+          </div>
+          <div className="sidebar-content">
+            {activeTab === 'chapters' && (
+              outline.length > 0 ? renderOutline(outline) : <div style={{ color: '#64748b', textAlign: 'center', marginTop: '20px' }}>No chapters found</div>
+            )}
+            {activeTab === 'bookmarks' && (
+              bookmarks.length > 0 ? bookmarks.map(b => (
+                <div key={b.id} className="bookmark-item" onClick={() => scrollToPage(null, b.page_index)}>
+                  ⭐ {b.title}
+                </div>
+              )) : <div style={{ color: '#64748b', textAlign: 'center', marginTop: '20px' }}>No bookmarks added</div>
+            )}
+          </div>
+        </div>
+        <div className="pdf-pages-container" ref={containerRef}>
+          {Array.from({ length: numPages }).map((_, i) => (
+            <PdfPage
+              key={i + 1}
+              pageIndex={i + 1}
+              pdfDocument={pdfDocument}
+              scale={zoom}
+              fileHash={fileHash}
+              drawMode={drawMode}
+              darkMode={darkMode}
+            />
+          ))}
+        </div>
       </div>
     </div>
   );

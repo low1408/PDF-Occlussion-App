@@ -25,6 +25,7 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
   const [revealedBoxId, setRevealedBoxId] = useState<string | null>(null);
   const [startPos, setStartPos] = useState<{ x: number, y: number } | null>(null);
   const [tempBox, setTempBox] = useState<{ x: number, y: number, w: number, h: number } | null>(null);
+  const [noteText, setNoteText] = useState<string>('');
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -111,6 +112,9 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
       } else {
         setRevealedBoxId(boxId);
         setSelectedBoxId(boxId);
+        // Seed note textarea with the box's current note
+        const box = allBoxes.find(b => b.id === boxId);
+        setNoteText(box?.note || '');
       }
     }
   };
@@ -120,6 +124,10 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
     console.log(`Graded box ${revealedBoxId} as: ${grade}`);
     setRevealedBoxId(null);
     setSelectedBoxId(null);
+  };
+
+  const handleNoteSave = (boxId: string) => {
+    useOcclusionStore.getState().updateBoxNote(boxId, noteText);
   };
 
   return (
@@ -169,6 +177,21 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
                 transition: 'background-color 0.2s ease, border-color 0.2s ease',
               }}
             />
+            
+            {box.note && <div className="note-indicator">📝</div>}
+
+            {isRevealed && !drawMode && (
+              <div className="note-popover" onClick={e => e.stopPropagation()}>
+                <textarea 
+                  className="note-textarea"
+                  placeholder="Add a note..."
+                  value={noteText}
+                  onChange={e => setNoteText(e.target.value)}
+                  onBlur={() => handleNoteSave(box.id)}
+                />
+              </div>
+            )}
+
             {isRevealed && !drawMode && (
               <div className="srs-grade-bar" style={{
                 position: 'absolute',

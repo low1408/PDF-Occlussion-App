@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import OcclusionLayer from './OcclusionLayer';
+import { useOcclusionStore } from '../store/useOcclusionStore';
 
 interface PdfPageProps {
   pageIndex: number; // 1-based index
@@ -16,6 +17,10 @@ export default function PdfPage({ pageIndex, pdfDocument, scale, fileHash, drawM
   const containerRef = useRef<HTMLDivElement>(null);
   const [isVisible, setIsVisible] = useState(false);
   const [viewport, setViewport] = useState<pdfjsLib.PageViewport | null>(null);
+
+  const bookmarks = useOcclusionStore(state => state.bookmarks);
+  const toggleBookmark = useOcclusionStore(state => state.toggleBookmark);
+  const isBookmarked = bookmarks.some(b => b.document_id === fileHash && b.page_index === pageIndex);
 
   // IntersectionObserver for Virtualization
   useEffect(() => {
@@ -105,6 +110,14 @@ export default function PdfPage({ pageIndex, pdfDocument, scale, fileHash, drawM
         position: 'relative',
       }}
     >
+      <button 
+        className="page-bookmark-btn" 
+        onClick={() => toggleBookmark(fileHash, pageIndex)}
+        title={isBookmarked ? "Remove Bookmark" : "Add Bookmark"}
+      >
+        {isBookmarked ? '★' : '☆'}
+      </button>
+
       {isVisible && (
         <canvas
           ref={canvasRef}
