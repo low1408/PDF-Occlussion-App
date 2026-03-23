@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import OcclusionLayer from './OcclusionLayer';
 import { useOcclusionStore } from '../store/useOcclusionStore';
@@ -10,27 +10,23 @@ interface PdfPageProps {
   fileHash: string;
   drawMode: boolean;
   darkMode: boolean;
+  scrollContainerRef: React.RefObject<HTMLDivElement>;
 }
 
-export default function PdfPage({ pageIndex, pdfDocument, scale, fileHash, drawMode, darkMode }: PdfPageProps) {
+export default function PdfPage({ pageIndex, pdfDocument, scale, fileHash, drawMode, darkMode, scrollContainerRef }: PdfPageProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const [isVisible, setIsVisible] = useState(false);
+  
+  // Track visibility purely imperatively (no useState) to avoid React render cycles on scroll
+  const isVisibleRef = useRef(false);
+  
   const [viewport, setViewport] = useState<pdfjsLib.PageViewport | null>(null);
+  // Cache last-known dimensions so the container never collapses during visibility transitions
+  const dimensionsRef = useRef<{ width: number; height: number } | null>(null);
 
   const bookmarks = useOcclusionStore(state => state.bookmarks);
   const toggleBookmark = useOcclusionStore(state => state.toggleBookmark);
   const isBookmarked = bookmarks.some(b => b.document_id === fileHash && b.page_index === pageIndex);
-
-  // IntersectionObserver for Virtualization
-  useEffect(() => {
-    const observer = new IntersectionObserver(([entry]) => {
-      setIsVisible(entry.isIntersecting);
-    }, { rootMargin: '100% 0px' });
-
-    if (containerRef.current) observer.observe(containerRef.current);
-    return () => observer.disconnect();
-  }, []);
 
   // Pre-calculate container dimensions so it doesn't collapse when unmounted
   useEffect(() => {
@@ -39,26 +35,46 @@ export default function PdfPage({ pageIndex, pdfDocument, scale, fileHash, drawM
       try {
         const page = await pdfDocument.getPage(pageIndex);
         const vp = page.getViewport({ scale, rotation: page.rotate || 0 });
-        if (active) setViewport(vp);
+        if (active) {
+          dimensionsRef.current = { width: vp.width, height: vp.height };
+          setViewport(vp);
+        }
       } catch (e) {}
     };
     measure();
     return () => { active = false; };
   }, [pdfDocument, pageIndex, scale]);
 
-  // Render on Canvas
+  // Unified IntersectionObserver and Canvas Render Effect (Imperative Only)
   useEffect(() => {
+    if (!viewport || !pdfDocument || !canvasRef.current) return;
+
+    let isCancelled = false;
     let renderTask: pdfjsLib.RenderTask | null = null;
     let pageProxy: pdfjsLib.PDFPageProxy | null = null;
-    let isCancelled = false;
+
+    const cleanupPage = () => {
+      if (renderTask) {
+        renderTask.cancel();
+        renderTask = null;
+      }
+      if (pageProxy && typeof (pageProxy as any).cleanup === 'function') {
+        (pageProxy as any).cleanup();
+        pageProxy = null;
+      }
+      // Clear the canvas to free up memory from the painted pixels
+      if (canvasRef.current) {
+        const ctx = canvasRef.current.getContext('2d');
+        if (ctx) ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+      }
+    };
 
     const renderPage = async () => {
-      if (!isVisible || !viewport || !canvasRef.current) return;
+      if (!isVisibleRef.current || !canvasRef.current) return;
 
       try {
         pageProxy = await pdfDocument.getPage(pageIndex);
         const vp = pageProxy.getViewport({ scale, rotation: pageProxy.rotate || 0 });
-        setViewport(vp);
 
         const canvas = canvasRef.current;
         const ctx = canvas.getContext('2d', { alpha: false });
@@ -87,26 +103,35 @@ export default function PdfPage({ pageIndex, pdfDocument, scale, fileHash, drawM
       }
     };
 
-    if (isVisible) {
-      renderPage();
-    } else {
-      if (pageProxy && typeof (pageProxy as any).cleanup === 'function') (pageProxy as any).cleanup();
-    }
+    const observer = new IntersectionObserver(([entry]) => {
+      isVisibleRef.current = entry.isIntersecting;
+      if (entry.isIntersecting) {
+        renderPage();
+      } else {
+        cleanupPage();
+      }
+    }, { root: scrollContainerRef.current, rootMargin: '200% 0px' });
+
+    if (containerRef.current) observer.observe(containerRef.current);
 
     return () => {
       isCancelled = true;
-      if (renderTask) renderTask.cancel();
-      if (pageProxy && typeof (pageProxy as any).cleanup === 'function') (pageProxy as any).cleanup();
+      observer.disconnect();
+      cleanupPage();
     };
-  }, [isVisible, pdfDocument, pageIndex, scale]); 
+  }, [viewport, pdfDocument, pageIndex, scale, scrollContainerRef]); 
+
+  // Use cached dimensions for the container to prevent layout shifts on scroll
+  const containerWidth = dimensionsRef.current?.width ?? viewport?.width;
+  const containerHeight = dimensionsRef.current?.height ?? viewport?.height;
 
   return (
     <div 
       ref={containerRef} 
       className="pdf-page-wrapper"
       style={{ 
-        width: viewport ? `${viewport.width}px` : '100%', 
-        height: viewport ? `${viewport.height}px` : '800px',
+        width: containerWidth ? `${containerWidth}px` : '100%', 
+        height: containerHeight ? `${containerHeight}px` : '800px',
         position: 'relative',
       }}
     >
@@ -118,13 +143,12 @@ export default function PdfPage({ pageIndex, pdfDocument, scale, fileHash, drawM
         {isBookmarked ? '★' : '☆'}
       </button>
 
-      {isVisible && (
-        <canvas
-          ref={canvasRef}
-          className={darkMode ? 'dark-canvas' : ''}
-        />
-      )}
-      {isVisible && viewport && (
+      {/* Unconditionally rendered, purely imperatively managed */}
+      <canvas
+        ref={canvasRef}
+        className={darkMode ? 'dark-canvas' : ''}
+      />
+      {viewport && (
         <OcclusionLayer viewport={viewport} pageIndex={pageIndex} fileHash={fileHash} drawMode={drawMode} />
       )}
     </div>

@@ -227,6 +227,7 @@ export default function PdfViewer({ fileData, fileHash }: PdfViewerProps) {
               fileHash={fileHash}
               drawMode={drawMode}
               darkMode={darkMode}
+              scrollContainerRef={containerRef}
             />
           ))}
         </div>

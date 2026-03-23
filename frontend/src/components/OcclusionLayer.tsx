@@ -25,7 +25,6 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
   const [revealedBoxId, setRevealedBoxId] = useState<string | null>(null);
   const [startPos, setStartPos] = useState<{ x: number, y: number } | null>(null);
   const [tempBox, setTempBox] = useState<{ x: number, y: number, w: number, h: number } | null>(null);
-  const [noteText, setNoteText] = useState<string>('');
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -99,23 +98,17 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
 
   const handleBoxClick = (e: React.MouseEvent, boxId: string) => {
     e.stopPropagation();
+    
     if (drawMode) {
-      // In draw mode, clicking selects for deletion
-      setSelectedBoxId(boxId);
+      // Selection logic for deletion
+      setSelectedBoxId(prev => prev === boxId ? null : boxId);
       setRevealedBoxId(null);
     } else {
-      // In review mode, clicking reveals the content underneath
-      if (revealedBoxId === boxId) {
-        // Clicking again hides it
-        setRevealedBoxId(null);
-        setSelectedBoxId(null);
-      } else {
-        setRevealedBoxId(boxId);
-        setSelectedBoxId(boxId);
-        // Seed note textarea with the box's current note
-        const box = allBoxes.find(b => b.id === boxId);
-        setNoteText(box?.note || '');
-      }
+      // Reveal logic for SRS review
+      setRevealedBoxId(prev => {
+        const isRevealing = prev !== boxId;
+        return isRevealing ? boxId : null;
+      });
     }
   };
 
@@ -124,10 +117,6 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
     console.log(`Graded box ${revealedBoxId} as: ${grade}`);
     setRevealedBoxId(null);
     setSelectedBoxId(null);
-  };
-
-  const handleNoteSave = (boxId: string) => {
-    useOcclusionStore.getState().updateBoxNote(boxId, noteText);
   };
 
   return (
@@ -142,8 +131,12 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
         top: 0, left: 0, right: 0, bottom: 0,
         zIndex: 10,
         cursor: drawMode ? 'crosshair' : 'default',
-        pointerEvents: drawMode ? 'auto' : 'none',
+        pointerEvents: 'auto',
         touchAction: drawMode ? 'none' : 'auto'
+      }}
+      onClick={() => {
+        setSelectedBoxId(null);
+        setRevealedBoxId(null);
       }}
     >
       {boxes.filter(b => !b.is_deleted).map(box => {
@@ -156,6 +149,12 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
         const isRevealed = revealedBoxId === box.id;
         const isSelected = selectedBoxId === box.id;
 
+        const getBorderColor = () => {
+          if (drawMode && isSelected) return '#ef4444'; // Red for deletion
+          if (isRevealed) return '#22c55e';             // Green for revealed
+          return '#fbbf24';                             // Yellow default
+        };
+
         return (
           <div key={box.id} style={{ position: 'absolute', left: `${x}px`, top: `${y}px`, width: `${w}px`, height: `${h}px` }}>
             <div
@@ -166,11 +165,7 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
                 inset: 0,
                 backgroundColor: isRevealed ? 'transparent' : '#111827',
                 borderRadius: '2px',
-                border: isSelected
-                  ? '2px solid #ef4444'
-                  : isRevealed
-                    ? '2px solid #22c55e'
-                    : '2px solid #fbbf24',
+                border: `2px solid ${getBorderColor()}`,
                 opacity: 1,
                 cursor: 'pointer',
                 pointerEvents: 'auto',
@@ -178,38 +173,8 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
               }}
             />
             
-            {box.note && <div className="note-indicator">📝</div>}
 
-            {isRevealed && !drawMode && (
-              <div className="note-popover" onClick={e => e.stopPropagation()}>
-                <textarea 
-                  className="note-textarea"
-                  placeholder="Add a note..."
-                  value={noteText}
-                  onChange={e => setNoteText(e.target.value)}
-                  onBlur={() => handleNoteSave(box.id)}
-                />
-              </div>
-            )}
 
-            {isRevealed && !drawMode && (
-              <div className="srs-grade-bar" style={{
-                position: 'absolute',
-                bottom: '-42px',
-                left: '50%',
-                transform: 'translateX(-50%)',
-                display: 'flex',
-                gap: '4px',
-                zIndex: 20,
-                pointerEvents: 'auto',
-                whiteSpace: 'nowrap',
-              }}>
-                <button className="srs-btn srs-easy" onClick={() => handleGrade('easy')}>Easy</button>
-                <button className="srs-btn srs-ok" onClick={() => handleGrade('ok')}>OK</button>
-                <button className="srs-btn srs-hard" onClick={() => handleGrade('hard')}>Hard</button>
-                <button className="srs-btn srs-impossible" onClick={() => handleGrade('impossible')}>Impossible</button>
-              </div>
-            )}
           </div>
         );
       })}
@@ -222,6 +187,28 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
           backgroundColor: 'rgba(17, 24, 39, 0.7)',
           border: '2px dashed #fbbf24'
         }} />
+      )}
+
+      {revealedBoxId && !drawMode && (
+        <div className="srs-grade-bar" style={{
+          position: 'fixed',
+          bottom: 0,
+          left: 0,
+          right: 0,
+          display: 'flex',
+          justifyContent: 'center',
+          gap: '16px',
+          zIndex: 9999,
+          pointerEvents: 'auto',
+          backgroundColor: '#1f2937',
+          padding: '24px',
+          boxShadow: '0 -4px 12px rgba(0, 0, 0, 0.2)'
+        }}>
+          <button className="srs-btn srs-easy" style={{ padding: '16px 32px', fontSize: '1.2rem', fontWeight: 'bold', borderRadius: '8px', flex: 1, maxWidth: '200px' }} onClick={() => handleGrade('easy')}>Easy</button>
+          <button className="srs-btn srs-ok" style={{ padding: '16px 32px', fontSize: '1.2rem', fontWeight: 'bold', borderRadius: '8px', flex: 1, maxWidth: '200px' }} onClick={() => handleGrade('ok')}>OK</button>
+          <button className="srs-btn srs-hard" style={{ padding: '16px 32px', fontSize: '1.2rem', fontWeight: 'bold', borderRadius: '8px', flex: 1, maxWidth: '200px' }} onClick={() => handleGrade('hard')}>Hard</button>
+          <button className="srs-btn srs-impossible" style={{ padding: '16px 32px', fontSize: '1.2rem', fontWeight: 'bold', borderRadius: '8px', flex: 1, maxWidth: '200px' }} onClick={() => handleGrade('impossible')}>Impossible</button>
+        </div>
       )}
     </div>
   );
