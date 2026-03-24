@@ -19,6 +19,50 @@ export interface Bookmark {
   created_at: number;
 }
 
+export interface SrsCard {
+  occlusion_id: string;
+  document_id: string;
+  ease_factor: number;
+  interval_days: number;
+  repetitions: number;
+  next_review_at: string;
+  last_modified: number;
+}
+
+export type SrsGrade = 'easy' | 'ok' | 'hard' | 'impossible';
+
+const GRADE_MAP: Record<SrsGrade, number> = { easy: 5, ok: 3, hard: 1, impossible: 0 };
+
+function computeSrs(card: Pick<SrsCard, 'ease_factor' | 'interval_days' | 'repetitions'>, grade: SrsGrade) {
+  const q = GRADE_MAP[grade];
+  let ef = card.ease_factor;
+  let interval = card.interval_days;
+  let reps = card.repetitions;
+
+  ef = ef + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02));
+  if (ef < 1.3) ef = 1.3;
+
+  if (q < 3) {
+    reps = 0;
+    interval = 0;
+  } else {
+    reps += 1;
+    if (reps === 1) interval = 1;
+    else if (reps === 2) interval = 6;
+    else interval = Math.round(interval * ef);
+  }
+
+  const nextReview = new Date();
+  nextReview.setDate(nextReview.getDate() + interval);
+
+  return {
+    ease_factor: Math.round(ef * 100) / 100,
+    interval_days: interval,
+    repetitions: reps,
+    next_review_at: nextReview.toISOString(),
+  };
+}
+
 export interface HistoryPatch {
   id: string;
   oldRef: Box | null;
@@ -40,12 +84,17 @@ interface OcclusionDB extends DBSchema {
     value: Bookmark;
     indexes: { 'by-doc': string };
   };
+  srs_cards: {
+    key: string;
+    value: SrsCard;
+    indexes: { 'by-doc': string };
+  };
 }
 
 let dbPromise: Promise<IDBPDatabase<OcclusionDB>> | null = null;
 let idbQueue: Promise<void> = Promise.resolve();
 if (typeof window !== 'undefined') {
-  dbPromise = openDB<OcclusionDB>('occlusion_engine', 2, {
+  dbPromise = openDB<OcclusionDB>('occlusion_engine', 3, {
     upgrade(db, oldVersion) {
       if (oldVersion < 1) {
         const store = db.createObjectStore('occlusions', { keyPath: 'id' });
@@ -54,6 +103,10 @@ if (typeof window !== 'undefined') {
       if (oldVersion < 2) {
         const bStore = db.createObjectStore('bookmarks', { keyPath: 'id' });
         bStore.createIndex('by-doc', 'document_id');
+      }
+      if (oldVersion < 3) {
+        const srsStore = db.createObjectStore('srs_cards', { keyPath: 'occlusion_id' });
+        srsStore.createIndex('by-doc', 'document_id');
       }
     },
   });
@@ -64,6 +117,7 @@ interface State {
   history: PatchGroup[];
   historyIndex: number;
   bookmarks: Bookmark[];
+  srsCards: SrsCard[];
 
   loadBoxesForDocument: (documentId: string) => Promise<void>;
   addBox: (box: Box) => void;
@@ -74,9 +128,11 @@ interface State {
   redo: () => void;
 
   toggleBookmark: (documentId: string, pageIndex: number, title?: string) => Promise<void>;
+  recordGrade: (occlusionId: string, documentId: string, grade: SrsGrade) => void;
 
   _saveToIDB: (boxesToSave: Box[]) => Promise<void>;
   _deleteFromIDB: (boxIds: string[]) => Promise<void>;
+  _saveSrsCardToIDB: (card: SrsCard) => Promise<void>;
 }
 
 export const useOcclusionStore = create<State>((set, get) => ({
@@ -84,13 +140,15 @@ export const useOcclusionStore = create<State>((set, get) => ({
   history: [],
   historyIndex: -1,
   bookmarks: [],
+  srsCards: [],
 
   loadBoxesForDocument: async (documentId: string) => {
     if (!dbPromise) return;
     const db = await dbPromise;
     const allBoxes = await db.getAllFromIndex('occlusions', 'by-doc', documentId);
     const bookmarks = await db.getAllFromIndex('bookmarks', 'by-doc', documentId);
-    set({ boxes: allBoxes, history: [], historyIndex: -1, bookmarks });
+    const srsCards = await db.getAllFromIndex('srs_cards', 'by-doc', documentId);
+    set({ boxes: allBoxes, history: [], historyIndex: -1, bookmarks, srsCards });
   },
 
   _saveToIDB: async (boxesToSave: Box[]) => {
@@ -196,6 +254,48 @@ export const useOcclusionStore = create<State>((set, get) => ({
       await db.put('bookmarks', newBm);
       set({ bookmarks: [...bookmarks, newBm] });
     }
+  },
+
+  recordGrade: (occlusionId: string, documentId: string, grade: SrsGrade) => {
+    const { srsCards } = get();
+    const existing = srsCards.find(c => c.occlusion_id === occlusionId);
+    const currentCard = existing || {
+      ease_factor: 2.5,
+      interval_days: 0,
+      repetitions: 0,
+    };
+
+    const newState = computeSrs(currentCard, grade);
+    const now = Date.now();
+
+    const updatedCard: SrsCard = {
+      occlusion_id: occlusionId,
+      document_id: documentId,
+      ease_factor: newState.ease_factor,
+      interval_days: newState.interval_days,
+      repetitions: newState.repetitions,
+      next_review_at: newState.next_review_at,
+      last_modified: now,
+    };
+
+    if (existing) {
+      set({ srsCards: srsCards.map(c => c.occlusion_id === occlusionId ? updatedCard : c) });
+    } else {
+      set({ srsCards: [...srsCards, updatedCard] });
+    }
+
+    get()._saveSrsCardToIDB(updatedCard);
+  },
+
+  _saveSrsCardToIDB: async (card: SrsCard) => {
+    if (!dbPromise) return;
+    idbQueue = idbQueue.then(async () => {
+      const db = await dbPromise;
+      const tx = db.transaction('srs_cards', 'readwrite');
+      tx.store.put(card);
+      await tx.done;
+    }).catch(console.error);
+    await idbQueue;
   },
 
   undo: () => {

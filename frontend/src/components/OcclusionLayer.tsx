@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
-import { useOcclusionStore, Box } from '../store/useOcclusionStore';
+import { useOcclusionStore, Box, SrsGrade } from '../store/useOcclusionStore';
 
 interface OcclusionLayerProps {
   viewport: pdfjsLib.PageViewport;
@@ -9,7 +9,7 @@ interface OcclusionLayerProps {
   drawMode: boolean;
 }
 
-type SrsGrade = 'easy' | 'ok' | 'hard' | 'impossible';
+
 
 export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode }: OcclusionLayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -17,6 +17,7 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
   const allBoxes = useOcclusionStore(state => state.boxes);
   const addBox = useOcclusionStore(state => state.addBox);
   const deleteBox = useOcclusionStore(state => state.deleteBox);
+  const recordGrade = useOcclusionStore(state => state.recordGrade);
 
   const boxes = allBoxes.filter(b => b.document_id === fileHash && b.page_index === pageIndex);
 
@@ -113,8 +114,9 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
   };
 
   const handleGrade = (grade: SrsGrade) => {
-    // TODO: Store grade in SRS system
-    console.log(`Graded box ${revealedBoxId} as: ${grade}`);
+    if (revealedBoxId) {
+      recordGrade(revealedBoxId, fileHash, grade);
+    }
     setRevealedBoxId(null);
     setSelectedBoxId(null);
   };

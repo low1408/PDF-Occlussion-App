@@ -48,6 +48,57 @@ function validateItems(items, schema) {
 }
 
 // ---------------------------------------------------------------------------
+// SM-2 Spaced Repetition Algorithm
+// ---------------------------------------------------------------------------
+
+const GRADE_MAP = { easy: 5, ok: 3, hard: 1, impossible: 0 };
+
+/**
+ * Compute the next SRS card state given a grade.
+ * Based on SM-2: https://en.wikipedia.org/wiki/SuperMemo#Description_of_SM-2_algorithm
+ *
+ * @param {{ ease_factor: number, interval_days: number, repetitions: number }} card
+ * @param {string} grade  — 'easy' | 'ok' | 'hard' | 'impossible'
+ * @returns {{ ease_factor: number, interval_days: number, repetitions: number, next_review_at: string }}
+ */
+function computeSrs(card, grade) {
+  const q = GRADE_MAP[grade];
+  if (q === undefined) throw new Error(`Invalid grade: ${grade}`);
+
+  let { ease_factor: ef, interval_days: interval, repetitions: reps } = card;
+
+  // Update ease factor: EF' = EF + (0.1 - (5-q) * (0.08 + (5-q) * 0.02))
+  ef = ef + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02));
+  if (ef < 1.3) ef = 1.3; // floor
+
+  if (q < 3) {
+    // Failed recall — reset
+    reps = 0;
+    interval = 0;
+  } else {
+    // Successful recall
+    reps += 1;
+    if (reps === 1) {
+      interval = 1;
+    } else if (reps === 2) {
+      interval = 6;
+    } else {
+      interval = Math.round(interval * ef);
+    }
+  }
+
+  const nextReview = new Date();
+  nextReview.setDate(nextReview.getDate() + interval);
+
+  return {
+    ease_factor: Math.round(ef * 100) / 100,
+    interval_days: interval,
+    repetitions: reps,
+    next_review_at: nextReview.toISOString(),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Health check
 // ---------------------------------------------------------------------------
 
@@ -302,6 +353,110 @@ app.post('/api/bookmarks/sync', async (req, res) => {
     res.status(500).json({ error: 'Internal Server Error' });
   } finally {
     client.release();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/srs/review  — record an SRS review grade (transactional)
+// ---------------------------------------------------------------------------
+
+const SRS_REVIEW_SCHEMA = {
+  occlusion_id: 'string',
+  grade: 'string',
+};
+
+app.post('/api/srs/review', async (req, res) => {
+  const { occlusion_id, grade, reviewed_at, last_modified } = req.body;
+
+  // ---- input validation ----
+  if (!occlusion_id || typeof occlusion_id !== 'string') {
+    return res.status(400).json({ error: '`occlusion_id` is required and must be a string' });
+  }
+  if (!grade || !GRADE_MAP.hasOwnProperty(grade)) {
+    return res.status(400).json({ error: '`grade` must be one of: easy, ok, hard, impossible' });
+  }
+  const ts = typeof last_modified === 'number' ? last_modified : Date.now();
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Fetch current card state (or defaults for first review)
+    const cardRes = await client.query(
+      'SELECT ease_factor, interval_days, repetitions FROM srs_cards WHERE occlusion_id = $1',
+      [occlusion_id],
+    );
+    const currentCard = cardRes.rows.length > 0
+      ? cardRes.rows[0]
+      : { ease_factor: 2.5, interval_days: 0, repetitions: 0 };
+
+    const newState = computeSrs(currentCard, grade);
+
+    // Upsert srs_cards
+    await client.query(
+      `INSERT INTO srs_cards (occlusion_id, ease_factor, interval_days, repetitions, next_review_at, last_modified)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (occlusion_id) DO UPDATE SET
+         ease_factor   = EXCLUDED.ease_factor,
+         interval_days = EXCLUDED.interval_days,
+         repetitions   = EXCLUDED.repetitions,
+         next_review_at = EXCLUDED.next_review_at,
+         last_modified  = EXCLUDED.last_modified
+       WHERE srs_cards.last_modified < EXCLUDED.last_modified`,
+      [occlusion_id, newState.ease_factor, newState.interval_days, newState.repetitions, newState.next_review_at, ts],
+    );
+
+    // Insert review log
+    await client.query(
+      `INSERT INTO srs_reviews (occlusion_id, grade, reviewed_at, ease_factor_after, interval_days_after, last_modified)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [occlusion_id, grade, reviewed_at || new Date().toISOString(), newState.ease_factor, newState.interval_days, ts],
+    );
+
+    await client.query('COMMIT');
+    res.json({ success: true, card: { occlusion_id, ...newState } });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('[POST /api/srs/review] Error:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  } finally {
+    client.release();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/srs/cards/:file_hash  — fetch SRS card states for a document
+// ---------------------------------------------------------------------------
+
+app.get('/api/srs/cards/:file_hash', async (req, res) => {
+  try {
+    const { file_hash } = req.params;
+    const since = parseSince(req.query.since);
+    if (since === null) {
+      return res.status(400).json({ error: '`since` must be a non-negative integer' });
+    }
+
+    const docRes = await pool.query(
+      'SELECT id FROM documents WHERE file_hash = $1',
+      [file_hash],
+    );
+    if (docRes.rows.length === 0) {
+      return res.json({ srs_cards: [] });
+    }
+    const documentId = docRes.rows[0].id;
+
+    const srsRes = await pool.query(
+      `SELECT sc.*
+       FROM srs_cards sc
+       JOIN occlusions o ON o.id = sc.occlusion_id
+       WHERE o.document_id = $1 AND sc.last_modified > $2`,
+      [documentId, since],
+    );
+
+    res.json({ srs_cards: srsRes.rows });
+  } catch (error) {
+    console.error('[GET /api/srs/cards] Error:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
   }
 });
 

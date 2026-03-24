@@ -2,11 +2,12 @@ import { openDB } from 'idb';
 
 async function sync() {
   try {
-    const db = await openDB('occlusion_engine', 1);
-    const tx = db.transaction('occlusions', 'readonly');
-    const allBoxes = await tx.store.getAll();
-    
-    // Group occlusions by document
+    const db = await openDB('occlusion_engine', 3);
+
+    // ---- Sync occlusions ----
+    const occTx = db.transaction('occlusions', 'readonly');
+    const allBoxes = await occTx.store.getAll();
+
     const byDoc: Record<string, any[]> = {};
     for (const box of allBoxes) {
       if (!byDoc[box.document_id]) {
@@ -15,7 +16,6 @@ async function sync() {
       byDoc[box.document_id].push(box);
     }
 
-    // Sync each document's occlusions
     for (const [docId, boxes] of Object.entries(byDoc)) {
       try {
         await fetch('http://localhost:3000/api/sync', {
@@ -25,7 +25,29 @@ async function sync() {
         });
         console.log(`Synced ${boxes.length} occlusions for document ${docId}`);
       } catch (err) {
-        console.error(`Failed to sync document ${docId}:`, err);
+        console.error(`Failed to sync occlusions for document ${docId}:`, err);
+      }
+    }
+
+    // ---- Sync SRS cards ----
+    const srsTx = db.transaction('srs_cards', 'readonly');
+    const allSrsCards = await srsTx.store.getAll();
+
+    for (const card of allSrsCards) {
+      try {
+        await fetch('http://localhost:3000/api/srs/review', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            occlusion_id: card.occlusion_id,
+            grade: 'ok', // The actual grade was already applied locally; re-sync the card state
+            reviewed_at: card.next_review_at,
+            last_modified: card.last_modified,
+          })
+        });
+        console.log(`Synced SRS card for occlusion ${card.occlusion_id}`);
+      } catch (err) {
+        console.error(`Failed to sync SRS card ${card.occlusion_id}:`, err);
       }
     }
   } catch (err) {
