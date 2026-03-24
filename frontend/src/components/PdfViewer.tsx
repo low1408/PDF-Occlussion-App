@@ -4,6 +4,7 @@ import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import { openDB } from 'idb';
 import { useOcclusionStore } from '../store/useOcclusionStore';
 import PdfPage from './PdfPage';
+import ReviewDashboard from './ReviewDashboard';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
@@ -18,6 +19,7 @@ export default function PdfViewer({ fileData, fileHash }: PdfViewerProps) {
   const [zoom, setZoom] = useState<number>(1.0);
   const [drawMode, setDrawMode] = useState<boolean>(false);
   const [darkMode, setDarkMode] = useState<boolean>(false);
+  const [showDashboard, setShowDashboard] = useState<boolean>(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const [outline, setOutline] = useState<any[]>([]);
@@ -148,8 +150,19 @@ export default function PdfViewer({ fileData, fileHash }: PdfViewerProps) {
     return <div className="loading">Loading PDF...</div>;
   }
 
+  const handleJumpToPage = (pageIndex: number) => {
+    scrollToPage(null, pageIndex);
+  };
+
   return (
     <div className={`pdf-viewer-overlay ${darkMode ? 'dark-mode' : ''}`}>
+      {showDashboard && (
+        <ReviewDashboard
+          fileHash={fileHash}
+          onClose={() => setShowDashboard(false)}
+          onJumpToPage={handleJumpToPage}
+        />
+      )}
       <div className="toolbar">
         <div className="toolbar-title">PDF Occlusion Engine ({numPages} pages)</div>
         <div className="mode-controls">
@@ -171,6 +184,12 @@ export default function PdfViewer({ fileData, fileHash }: PdfViewerProps) {
           <button onClick={redo} disabled={historyIndex >= historyLength - 1}>Redo</button>
         </div>
         <div className="share-controls">
+          <button
+            className="mode-btn"
+            onClick={() => setShowDashboard(true)}
+          >
+            📊 Dashboard
+          </button>
           <button onClick={handleExport}>Export</button>
           <label className="import-btn">
             Import

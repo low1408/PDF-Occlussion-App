@@ -230,6 +230,27 @@ export const useOcclusionStore = create<State>((set, get) => ({
 
   deleteBox: (id: string) => {
     get().updateBox(id, { is_deleted: true });
+
+    // Immediately sync the deletion to the backend (don't wait for the 10s sync interval)
+    const box = get().boxes.find(b => b.id === id);
+    if (box) {
+      const payload = {
+        file_hash: box.document_id,
+        occlusions: [{
+          id: box.id,
+          page_index: box.page_index,
+          bounding_box: box.pdfRect,
+          note: box.note ?? null,
+          is_deleted: true,
+          last_modified: box.last_modified,
+        }],
+      };
+      fetch('http://localhost:3000/api/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }).catch(err => console.warn('[deleteBox] Failed to sync deletion to backend:', err));
+    }
   },
 
   toggleBookmark: async (documentId: string, pageIndex: number, title: string = `Page ${pageIndex}`) => {
@@ -284,7 +305,29 @@ export const useOcclusionStore = create<State>((set, get) => ({
       set({ srsCards: [...srsCards, updatedCard] });
     }
 
+    // Save to IDB (offline cache)
     get()._saveSrsCardToIDB(updatedCard);
+
+    // Fire review to backend — creates srs_reviews row and updates srs_cards.
+    // If the occlusion hasn't synced to PostgreSQL yet, the server returns 202
+    // and we retry after 12 seconds (sync worker runs every 10s).
+    const reviewPayload = {
+      occlusion_id: occlusionId,
+      grade,
+      reviewed_at: new Date().toISOString(),
+      last_modified: now,
+    };
+    const postReview = () => fetch('http://localhost:3000/api/srs/review', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(reviewPayload),
+    });
+    postReview().then(async res => {
+      if (res.status === 202) {
+        // Occlusion not in DB yet — retry after sync worker has had a chance to push it
+        setTimeout(() => postReview().catch(err => console.warn('[SRS] Retry failed:', err)), 12000);
+      }
+    }).catch(err => console.warn('[SRS] Failed to sync review to backend:', err));
   },
 
   _saveSrsCardToIDB: async (card: SrsCard) => {

@@ -7,9 +7,15 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '5mb' }));
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgresql://localhost:5432/occlusion_engine',
-});
+const pool = new Pool(
+  process.env.DATABASE_URL
+    ? { connectionString: process.env.DATABASE_URL }
+    : {
+        user: 'harry',
+        database: 'occlusion_engine',
+        host: '/var/run/postgresql',   // Force Unix socket (peer auth, no password needed)
+      }
+);
 
 // ---------------------------------------------------------------------------
 // Validation helpers
@@ -381,6 +387,17 @@ app.post('/api/srs/review', async (req, res) => {
   try {
     await client.query('BEGIN');
 
+    // Check the occlusion exists — it may not have synced yet from IDB
+    const occRes = await client.query(
+      'SELECT id FROM occlusions WHERE id = $1',
+      [occlusion_id],
+    );
+    if (occRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      // Occlusion not in DB yet — sync worker will push it within 10s, client can retry
+      return res.status(202).json({ queued: true, message: 'Occlusion not yet synced; review will be retried.' });
+    }
+
     // Fetch current card state (or defaults for first review)
     const cardRes = await client.query(
       'SELECT ease_factor, interval_days, repetitions FROM srs_cards WHERE occlusion_id = $1',
@@ -461,7 +478,105 @@ app.get('/api/srs/cards/:file_hash', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// POST /api/srs/sync  — batch upsert pre-computed SRS card states
+// ---------------------------------------------------------------------------
+
+app.post('/api/srs/sync', async (req, res) => {
+  const { cards } = req.body;
+
+  if (!Array.isArray(cards) || cards.length === 0) {
+    return res.status(400).json({ error: '`cards` must be a non-empty array' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    for (const card of cards) {
+      if (!card.occlusion_id || typeof card.occlusion_id !== 'string') continue;
+      const ts = typeof card.last_modified === 'number' ? card.last_modified : Date.now();
+
+      await client.query(
+        `INSERT INTO srs_cards (occlusion_id, ease_factor, interval_days, repetitions, next_review_at, last_modified)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (occlusion_id) DO UPDATE SET
+           ease_factor    = EXCLUDED.ease_factor,
+           interval_days  = EXCLUDED.interval_days,
+           repetitions    = EXCLUDED.repetitions,
+           next_review_at = EXCLUDED.next_review_at,
+           last_modified  = EXCLUDED.last_modified
+         WHERE srs_cards.last_modified < EXCLUDED.last_modified`,
+        [
+          card.occlusion_id,
+          card.ease_factor ?? 2.5,
+          card.interval_days ?? 0,
+          card.repetitions ?? 0,
+          card.next_review_at ?? null,
+          ts,
+        ],
+      );
+    }
+
+    await client.query('COMMIT');
+    res.json({ success: true, upserted: cards.length });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('[POST /api/srs/sync] Error:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  } finally {
+    client.release();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/dashboard/:file_hash  — all occlusions + SRS state for dashboard
+// ---------------------------------------------------------------------------
+
+app.get('/api/dashboard/:file_hash', async (req, res) => {
+  try {
+    const { file_hash } = req.params;
+
+    const docRes = await pool.query(
+      'SELECT id FROM documents WHERE file_hash = $1',
+      [file_hash],
+    );
+    if (docRes.rows.length === 0) {
+      return res.json({ cards: [] });
+    }
+    const documentId = docRes.rows[0].id;
+
+    // Join occlusions with their SRS card state and most recent review
+    const result = await pool.query(
+      `SELECT
+         o.id,
+         o.page_index,
+         o.bounding_box,
+         o.note,
+         o.is_deleted,
+         sc.ease_factor,
+         sc.interval_days,
+         sc.repetitions,
+         sc.next_review_at,
+         sc.last_modified AS card_last_modified,
+         (SELECT grade FROM srs_reviews sr WHERE sr.occlusion_id = o.id ORDER BY sr.reviewed_at DESC LIMIT 1) AS last_grade,
+         (SELECT COUNT(*) FROM srs_reviews sr WHERE sr.occlusion_id = o.id) AS review_count
+       FROM occlusions o
+       LEFT JOIN srs_cards sc ON sc.occlusion_id = o.id
+       WHERE o.document_id = $1 AND o.is_deleted = FALSE
+       ORDER BY sc.next_review_at ASC NULLS FIRST, o.page_index ASC`,
+      [documentId],
+    );
+
+    res.json({ cards: result.rows });
+  } catch (error) {
+    console.error('[GET /api/dashboard] Error:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Start server AFTER verifying database connectivity
+
 // ---------------------------------------------------------------------------
 
 const PORT = process.env.PORT || 3000;

@@ -13,6 +13,7 @@ interface OcclusionLayerProps {
 
 export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode }: OcclusionLayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const wasDragged = useRef(false);
 
   const allBoxes = useOcclusionStore(state => state.boxes);
   const addBox = useOcclusionStore(state => state.addBox);
@@ -22,26 +23,27 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
   const boxes = allBoxes.filter(b => b.document_id === fileHash && b.page_index === pageIndex);
 
   const [isDrawing, setIsDrawing] = useState(false);
-  const [selectedBoxId, setSelectedBoxId] = useState<string | null>(null);
+  const [isLassoing, setIsLassoing] = useState(false);
+  const [selectedBoxIds, setSelectedBoxIds] = useState<Set<string>>(new Set());
   const [revealedBoxId, setRevealedBoxId] = useState<string | null>(null);
   const [startPos, setStartPos] = useState<{ x: number, y: number } | null>(null);
   const [tempBox, setTempBox] = useState<{ x: number, y: number, w: number, h: number } | null>(null);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedBoxId) {
-        deleteBox(selectedBoxId);
-        setSelectedBoxId(null);
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedBoxIds.size > 0) {
+        selectedBoxIds.forEach(id => deleteBox(id));
+        setSelectedBoxIds(new Set());
         setRevealedBoxId(null);
       }
       if (e.key === 'Escape') {
-        setSelectedBoxId(null);
+        setSelectedBoxIds(new Set());
         setRevealedBoxId(null);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedBoxId, deleteBox]);
+  }, [selectedBoxIds, deleteBox]);
 
   const getPointerPos = (e: React.PointerEvent) => {
     if (!containerRef.current) return { x: 0, y: 0 };
@@ -53,11 +55,16 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
   };
 
   const handlePointerDown = (e: React.PointerEvent) => {
+    wasDragged.current = false;
     if (!drawMode) return;
     if (e.target !== containerRef.current && (e.target as HTMLElement).classList.contains('occlusion-box')) return;
     const pos = getPointerPos(e);
-    setIsDrawing(true);
-    setSelectedBoxId(null);
+    if (e.shiftKey) {
+      setIsLassoing(true);
+    } else {
+      setIsDrawing(true);
+      setSelectedBoxIds(new Set());
+    }
     setRevealedBoxId(null);
     setStartPos(pos);
     setTempBox({ x: pos.x, y: pos.y, w: 0, h: 0 });
@@ -65,33 +72,64 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
-    if (!isDrawing || !startPos) return;
+    if ((!isDrawing && !isLassoing) || !startPos) return;
     const currentPos = getPointerPos(e);
     const x = Math.min(startPos.x, currentPos.x);
     const y = Math.min(startPos.y, currentPos.y);
     const w = Math.abs(currentPos.x - startPos.x);
     const h = Math.abs(currentPos.y - startPos.y);
+    if (w > 5 || h > 5) wasDragged.current = true;
     setTempBox({ x, y, w, h });
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
-    if (!isDrawing || !tempBox || !startPos) return;
-    setIsDrawing(false);
+    if ((!isDrawing && !isLassoing) || !tempBox || !startPos) return;
 
-    if (tempBox.w > 5 && tempBox.h > 5) {
-      const p1 = viewport.convertToPdfPoint(tempBox.x, tempBox.y);
-      const p2 = viewport.convertToPdfPoint(tempBox.x + tempBox.w, tempBox.y + tempBox.h);
+    if (isLassoing) {
+      setIsLassoing(false);
+      if (tempBox.w > 5 && tempBox.h > 5) {
+        const tempPdfRect = [
+          viewport.convertToPdfPoint(tempBox.x, tempBox.y),
+          viewport.convertToPdfPoint(tempBox.x + tempBox.w, tempBox.y + tempBox.h)
+        ];
+        const lassoXMin = Math.min(tempPdfRect[0][0], tempPdfRect[1][0]);
+        const lassoXMax = Math.max(tempPdfRect[0][0], tempPdfRect[1][0]);
+        const lassoYMin = Math.min(tempPdfRect[0][1], tempPdfRect[1][1]);
+        const lassoYMax = Math.max(tempPdfRect[0][1], tempPdfRect[1][1]);
+        
+        setSelectedBoxIds(prev => {
+          const next = new Set(prev);
+          boxes.forEach(box => {
+            if (box.is_deleted) return;
+            const bXMin = Math.min(box.pdfRect[0], box.pdfRect[2]);
+            const bXMax = Math.max(box.pdfRect[0], box.pdfRect[2]);
+            const bYMin = Math.min(box.pdfRect[1], box.pdfRect[3]);
+            const bYMax = Math.max(box.pdfRect[1], box.pdfRect[3]);
+            if (bXMin <= lassoXMax && bXMax >= lassoXMin && bYMin <= lassoYMax && bYMax >= lassoYMin) {
+              next.add(box.id);
+            }
+          });
+          return next;
+        });
+      }
+    } else {
+      setIsDrawing(false);
 
-      const newBox: Box = {
-        id: crypto.randomUUID(),
-        document_id: fileHash,
-        page_index: pageIndex,
-        pdfRect: [p1[0], p1[1], p2[0], p2[1]],
-        is_deleted: false,
-        last_modified: Date.now()
-      };
+      if (tempBox.w > 5 && tempBox.h > 5) {
+        const p1 = viewport.convertToPdfPoint(tempBox.x, tempBox.y);
+        const p2 = viewport.convertToPdfPoint(tempBox.x + tempBox.w, tempBox.y + tempBox.h);
 
-      addBox(newBox);
+        const newBox: Box = {
+          id: crypto.randomUUID(),
+          document_id: fileHash,
+          page_index: pageIndex,
+          pdfRect: [p1[0], p1[1], p2[0], p2[1]],
+          is_deleted: false,
+          last_modified: Date.now()
+        };
+
+        addBox(newBox);
+      }
     }
     setTempBox(null);
     e.currentTarget.releasePointerCapture(e.pointerId);
@@ -102,7 +140,15 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
     
     if (drawMode) {
       // Selection logic for deletion
-      setSelectedBoxId(prev => prev === boxId ? null : boxId);
+      setSelectedBoxIds(prev => {
+        const next = new Set(prev);
+        if (next.has(boxId)) {
+          next.delete(boxId);
+        } else {
+          next.add(boxId);
+        }
+        return next;
+      });
       setRevealedBoxId(null);
     } else {
       // Reveal logic for SRS review
@@ -118,7 +164,7 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
       recordGrade(revealedBoxId, fileHash, grade);
     }
     setRevealedBoxId(null);
-    setSelectedBoxId(null);
+    setSelectedBoxIds(new Set());
   };
 
   return (
@@ -137,7 +183,8 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
         touchAction: drawMode ? 'none' : 'auto'
       }}
       onClick={() => {
-        setSelectedBoxId(null);
+        if (wasDragged.current) return;
+        setSelectedBoxIds(new Set());
         setRevealedBoxId(null);
       }}
     >
@@ -149,7 +196,7 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
         const h = Math.abs(rect[3] - rect[1]);
 
         const isRevealed = revealedBoxId === box.id;
-        const isSelected = selectedBoxId === box.id;
+        const isSelected = selectedBoxIds.has(box.id);
 
         const getBorderColor = () => {
           if (drawMode && isSelected) return '#ef4444'; // Red for deletion
@@ -186,8 +233,8 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
           position: 'absolute',
           left: `${tempBox.x}px`, top: `${tempBox.y}px`,
           width: `${tempBox.w}px`, height: `${tempBox.h}px`,
-          backgroundColor: 'rgba(17, 24, 39, 0.7)',
-          border: '2px dashed #fbbf24'
+          backgroundColor: isLassoing ? 'rgba(59, 130, 246, 0.2)' : 'rgba(17, 24, 39, 0.7)',
+          border: `2px dashed ${isLassoing ? '#3b82f6' : '#fbbf24'}`
         }} />
       )}
 

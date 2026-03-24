@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS documents (
 );
 
 CREATE TABLE IF NOT EXISTS occlusions (
-    id UUID PRIMARY KEY,
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     document_id UUID REFERENCES documents(id) ON DELETE CASCADE,
     page_index INTEGER NOT NULL,
     bounding_box JSONB NOT NULL,
@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS occlusions (
 );
 
 CREATE TABLE IF NOT EXISTS bookmarks (
-    id UUID PRIMARY KEY,
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     document_id UUID REFERENCES documents(id) ON DELETE CASCADE,
     page_index INTEGER NOT NULL,
     title TEXT,
