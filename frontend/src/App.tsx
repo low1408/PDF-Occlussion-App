@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useOcclusionStore } from './store/useOcclusionStore';
 import PdfViewer from './components/PdfViewer';
 import './index.css';
@@ -14,10 +14,17 @@ function App() {
     }
   }, [fileHash, loadBoxesForDocument]);
 
+  const workerRef = useRef<Worker | null>(null);
+
   useEffect(() => {
     const worker = new Worker(new URL('./syncWorker.ts', import.meta.url), { type: 'module' });
+    workerRef.current = worker;
     return () => worker.terminate();
   }, []);
+
+  const handleSync = () => {
+    workerRef.current?.postMessage('sync');
+  };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -41,7 +48,7 @@ function App() {
           <input type="file" accept="application/pdf" onChange={handleFileChange} />
         </div>
       ) : (
-        <PdfViewer fileData={fileData} fileHash={fileHash} />
+        <PdfViewer fileData={fileData} fileHash={fileHash} onSync={handleSync} />
       )}
     </div>
   );

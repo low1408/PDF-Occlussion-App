@@ -11,9 +11,10 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 interface PdfViewerProps {
   fileData: ArrayBuffer;
   fileHash: string;
+  onSync: () => void;
 }
 
-export default function PdfViewer({ fileData, fileHash }: PdfViewerProps) {
+export default function PdfViewer({ fileData, fileHash, onSync }: PdfViewerProps) {
   const [pdfDocument, setPdfDocument] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
   const [numPages, setNumPages] = useState<number>(0);
   const [zoom, setZoom] = useState<number>(1.0);
@@ -184,6 +185,9 @@ export default function PdfViewer({ fileData, fileHash }: PdfViewerProps) {
           <button onClick={redo} disabled={historyIndex >= historyLength - 1}>Redo</button>
         </div>
         <div className="share-controls">
+          <button onClick={onSync} className="mode-btn">
+            🔄 Sync
+          </button>
           <button
             className="mode-btn"
             onClick={() => setShowDashboard(true)}

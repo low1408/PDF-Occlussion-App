@@ -103,8 +103,8 @@ async function sync() {
   }
 }
 
-// Run sync every 10 seconds
-setInterval(sync, 10000);
-
-// Initial sync
-sync();
+self.addEventListener('message', (event) => {
+  if (event.data === 'sync') {
+    sync();
+  }
+});

@@ -8,7 +8,7 @@ echo "Starting PDF Occlusion Engine..."
 # Start the Node.js backend server in the background
 echo "Starting Backend (Port 3000)..."
 cd backend
-npm start &
+node index.js &
 BACKEND_PID=$!
 cd ..
 
