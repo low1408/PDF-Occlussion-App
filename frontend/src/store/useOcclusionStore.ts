@@ -27,7 +27,20 @@ export interface SrsCard {
   repetitions: number;
   next_review_at: string;
   last_modified: number;
+  /** The grade recorded in the most recent review session. */
+  last_grade?: SrsGrade;
+  /** Total number of times this card has been graded. */
+  review_count: number;
+  /** True once the card has ever been graded 'impossible'; never resets to false. */
+  ever_impossible: boolean;
 }
+
+/** Filter mode for review-mode arrow-key navigation. */
+export type ReviewFilter =
+  | 'all'
+  | 'last-impossible'    // last_grade === 'impossible'
+  | 'due-impossible'     // currently due AND last_grade === 'impossible'
+  | 'ever-impossible';   // ever_impossible === true
 
 export type SrsGrade = 'easy' | 'ok' | 'hard' | 'impossible';
 
@@ -325,6 +338,9 @@ export const useOcclusionStore = create<State>((set, get) => ({
       repetitions: newState.repetitions,
       next_review_at: newState.next_review_at,
       last_modified: now,
+      last_grade: grade,
+      review_count: (existing?.review_count ?? 0) + 1,
+      ever_impossible: grade === 'impossible' || (existing?.ever_impossible ?? false),
     };
 
     if (existing) {

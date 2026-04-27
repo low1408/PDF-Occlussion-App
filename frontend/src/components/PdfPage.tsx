@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import OcclusionLayer from './OcclusionLayer';
-import { useOcclusionStore } from '../store/useOcclusionStore';
+import { useOcclusionStore, ReviewFilter } from '../store/useOcclusionStore';
 
 interface PdfPageProps {
   pageIndex: number; // 1-based index
@@ -11,9 +11,10 @@ interface PdfPageProps {
   drawMode: boolean;
   darkMode: boolean;
   scrollContainerRef: React.RefObject<HTMLDivElement>;
+  reviewFilter: ReviewFilter;
 }
 
-export default function PdfPage({ pageIndex, pdfDocument, scale, fileHash, drawMode, darkMode, scrollContainerRef }: PdfPageProps) {
+export default function PdfPage({ pageIndex, pdfDocument, scale, fileHash, drawMode, darkMode, scrollContainerRef, reviewFilter }: PdfPageProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   
@@ -153,7 +154,7 @@ export default function PdfPage({ pageIndex, pdfDocument, scale, fileHash, drawM
         className={darkMode ? 'dark-canvas' : ''}
       />
       {viewport && (
-        <OcclusionLayer viewport={viewport} pageIndex={pageIndex} fileHash={fileHash} drawMode={drawMode} revealAll={revealAll} />
+        <OcclusionLayer viewport={viewport} pageIndex={pageIndex} fileHash={fileHash} drawMode={drawMode} revealAll={revealAll} reviewFilter={reviewFilter} />
       )}
     </div>
   );

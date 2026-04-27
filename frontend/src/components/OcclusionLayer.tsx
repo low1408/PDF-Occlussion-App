@@ -1,6 +1,15 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
-import { useOcclusionStore, Box, SrsGrade } from '../store/useOcclusionStore';
+import { useOcclusionStore, Box, SrsGrade, SrsCard, ReviewFilter } from '../store/useOcclusionStore';
+
+// Border color for each grade (used when box is not revealed/selected/focused with overrides).
+const GRADE_COLORS: Record<SrsGrade, string> = {
+  easy:       '#10b981', // emerald
+  ok:         '#06b6d4', // cyan
+  hard:       '#f97316', // orange
+  impossible: '#ef4444', // red
+};
+const DEFAULT_BORDER = '#fbbf24'; // amber — no grade yet
 
 interface OcclusionLayerProps {
   viewport: pdfjsLib.PageViewport;
@@ -8,9 +17,10 @@ interface OcclusionLayerProps {
   fileHash: string;
   drawMode: boolean;
   revealAll: boolean;
+  reviewFilter: ReviewFilter;
 }
 
-export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode, revealAll }: OcclusionLayerProps) {
+export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode, revealAll, reviewFilter }: OcclusionLayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const wasDragged = useRef(false);
   // In review mode, we store the pointer id here so we can call setPointerCapture
@@ -22,8 +32,26 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
   const addBox = useOcclusionStore(state => state.addBox);
   const deleteBox = useOcclusionStore(state => state.deleteBox);
   const recordGrade = useOcclusionStore(state => state.recordGrade);
+  const srsCards = useOcclusionStore(state => state.srsCards);
 
   const boxes = allBoxes.filter(b => b.document_id === fileHash && b.page_index === pageIndex);
+
+  // Helper: look up SRS card for a given occlusion id.
+  const getSrsCard = (boxId: string): SrsCard | undefined =>
+    srsCards.find(c => c.occlusion_id === boxId);
+
+  // Helper: is a card currently due for review?
+  const isDue = (card: SrsCard | undefined): boolean => {
+    if (!card) return true; // never reviewed → treat as due
+    return new Date(card.next_review_at) <= new Date();
+  };
+
+  // Helper: get the grade-derived border color for a box.
+  const getGradeColor = (boxId: string): string => {
+    const card = getSrsCard(boxId);
+    if (!card?.last_grade) return DEFAULT_BORDER;
+    return GRADE_COLORS[card.last_grade];
+  };
 
   // Boxes sorted in reading order (top → bottom) using viewport screen coordinates.
   // viewport.convertToViewportRectangle maps PDF space (y from bottom) → screen space (y from top).
@@ -39,6 +67,26 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
       });
   }, [boxes, viewport]);
 
+  // Navigable boxes: sorted + filtered by the active review filter.
+  // Arrow-key navigation only cycles through these boxes.
+  const navigableBoxes = useMemo(() => {
+    if (reviewFilter === 'all') return sortedBoxes;
+    return sortedBoxes.filter(box => {
+      const card = getSrsCard(box.id);
+      switch (reviewFilter) {
+        case 'last-impossible':
+          return card?.last_grade === 'impossible';
+        case 'due-impossible':
+          return card?.last_grade === 'impossible' && isDue(card);
+        case 'ever-impossible':
+          return card?.ever_impossible === true;
+        default:
+          return true;
+      }
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sortedBoxes, srsCards, reviewFilter]);
+
   const [isDrawing, setIsDrawing] = useState(false);
   const [isLassoing, setIsLassoing] = useState(false);
   const [selectedBoxIds, setSelectedBoxIds] = useState<Set<string>>(new Set());
@@ -50,16 +98,23 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
   // null = no mask focused on this page.
   const [focusedBoxIndex, setFocusedBoxIndex] = useState<number | null>(null);
 
-  // Derive the focused box from the index (guarded against out-of-bounds after deletions).
+  // Derive the focused box from the index (guarded against out-of-bounds after deletions/filter changes).
   const focusedBox: Box | null =
-    focusedBoxIndex !== null && focusedBoxIndex < sortedBoxes.length
-      ? sortedBoxes[focusedBoxIndex]
+    focusedBoxIndex !== null && focusedBoxIndex < navigableBoxes.length
+      ? navigableBoxes[focusedBoxIndex]
       : null;
 
-  // Advance focus to the next box and hide the current reveal.
+  // Clamp or clear focusedBoxIndex when the navigable list shrinks (e.g., filter changed).
+  useEffect(() => {
+    if (focusedBoxIndex !== null && focusedBoxIndex >= navigableBoxes.length) {
+      setFocusedBoxIndex(navigableBoxes.length > 0 ? 0 : null);
+    }
+  }, [navigableBoxes.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Advance focus to the next navigable box and hide the current reveal.
   const advanceFocus = (currentIndex: number | null) => {
-    if (sortedBoxes.length === 0) return;
-    const next = currentIndex === null ? 0 : (currentIndex + 1) % sortedBoxes.length;
+    if (navigableBoxes.length === 0) return;
+    const next = currentIndex === null ? 0 : (currentIndex + 1) % navigableBoxes.length;
     setFocusedBoxIndex(next);
     setRevealedBoxId(null);
   };
@@ -88,11 +143,11 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
       // --- Review mode keyboard navigation ---
       // Only respond if this page has focus established (focusedBoxIndex !== null)
       // OR if it's the first press of ArrowRight (starts focus at index 0).
-      if (!drawMode && sortedBoxes.length > 0) {
+      if (!drawMode && navigableBoxes.length > 0) {
         if (e.key === 'ArrowRight') {
           e.preventDefault();
           setFocusedBoxIndex(prev => {
-            const next = prev === null ? 0 : (prev + 1) % sortedBoxes.length;
+            const next = prev === null ? 0 : (prev + 1) % navigableBoxes.length;
             return next;
           });
           setRevealedBoxId(null); // hide when navigating away
@@ -103,7 +158,7 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
           e.preventDefault();
           // Only go left if already focused (no wrap-around from null)
           if (focusedBoxIndex !== null) {
-            const prev = (focusedBoxIndex - 1 + sortedBoxes.length) % sortedBoxes.length;
+            const prev = (focusedBoxIndex - 1 + navigableBoxes.length) % navigableBoxes.length;
             setFocusedBoxIndex(prev);
             setRevealedBoxId(null);
           }
@@ -138,7 +193,7 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedBoxIds, deleteBox, drawMode, sortedBoxes, focusedBox, focusedBoxIndex, revealedBoxId, recordGrade, fileHash]);
+  }, [selectedBoxIds, deleteBox, drawMode, sortedBoxes, navigableBoxes, focusedBox, focusedBoxIndex, revealedBoxId, recordGrade, fileHash]);
 
   const getPointerPos = (e: React.PointerEvent) => {
     if (!containerRef.current) return { x: 0, y: 0 };
@@ -284,10 +339,17 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
       });
       setRevealedBoxId(null);
     } else {
-      // Clicking a box in review mode: set focus to that box AND toggle reveal.
-      // This establishes page focus so arrow keys start working here.
-      const idx = sortedBoxes.findIndex(b => b.id === boxId);
-      if (idx >= 0) setFocusedBoxIndex(idx);
+      // Clicking a box in review mode: always toggle reveal.
+      // If the box is in the current navigable list, also set focus for arrow-key navigation.
+      // If the box is filtered out (not in navigableBoxes), we allow revealing it but clear
+      // keyboard focus so arrows continue cycling through the filtered set.
+      const navIdx = navigableBoxes.findIndex(b => b.id === boxId);
+      if (navIdx >= 0) {
+        setFocusedBoxIndex(navIdx);
+      } else {
+        // Box is outside the current filter — reveal it but don't assign focus.
+        setFocusedBoxIndex(null);
+      }
       setRevealedBoxId(prev => (prev === boxId ? null : boxId));
     }
   };
@@ -332,12 +394,20 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
         const isRevealed = revealAll || revealedBoxId === box.id;
         const isSelected = selectedBoxIds.has(box.id);
         const isFocused = !drawMode && focusedBox?.id === box.id;
+        const gradeColor = getGradeColor(box.id);
 
+        // Precedence: draw-selected (red) > revealed (green border) > grade color border.
+        // Focused adds a blue glow shadow so grade color remains visible on the border.
         const getBorderColor = () => {
           if (drawMode && isSelected) return '#ef4444'; // Red for deletion
           if (isRevealed) return '#22c55e';             // Green for revealed
-          if (isFocused) return '#60a5fa';              // Blue for focused
-          return '#fbbf24';                             // Yellow default
+          return gradeColor;                            // Grade-derived color (or default amber)
+        };
+
+        const getBoxShadow = () => {
+          if (drawMode && isSelected) return '0 0 0 3px rgba(239,68,68,0.35)';
+          if (isFocused && !isRevealed) return `0 0 0 3px rgba(96, 165, 250, 0.5)`;
+          return undefined;
         };
 
         return (
@@ -355,7 +425,7 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
                 cursor: 'pointer',
                 pointerEvents: 'auto',
                 transition: 'background-color 0.2s ease, border-color 0.2s ease',
-                boxShadow: isFocused && !isRevealed ? '0 0 0 3px rgba(96, 165, 250, 0.4)' : undefined,
+                boxShadow: getBoxShadow(),
               }}
             />
           </div>
@@ -443,8 +513,35 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
           <span><kbd className="nav-kbd">Space</kbd> reveal</span>
           <span>·</span>
           <span style={{ color: '#60a5fa' }}>
-            {sortedBoxes.findIndex(b => b.id === focusedBox.id) + 1} / {sortedBoxes.length}
+            {(focusedBoxIndex ?? 0) + 1} / {navigableBoxes.length}
+            {reviewFilter !== 'all' && (
+              <span style={{ color: '#94a3b8', marginLeft: '6px' }}>
+                (filtered from {sortedBoxes.length})
+              </span>
+            )}
           </span>
+        </div>
+      )}
+
+      {/* Hint when a filter is active but no masks match on this page */}
+      {!drawMode && reviewFilter !== 'all' && navigableBoxes.length === 0 && sortedBoxes.length > 0 && !revealedBoxId && selectedBoxIds.size === 0 && (
+        <div style={{
+          position: 'fixed',
+          bottom: 0,
+          left: 0,
+          right: 0,
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          zIndex: 9999,
+          pointerEvents: 'none',
+          backgroundColor: 'rgba(31, 41, 55, 0.92)',
+          padding: '10px 24px',
+          fontSize: '0.8rem',
+          color: '#64748b',
+          letterSpacing: '0.04em',
+        }}>
+          0 masks match the current filter on this page
         </div>
       )}
 

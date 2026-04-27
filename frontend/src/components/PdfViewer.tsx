@@ -2,7 +2,7 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import { openDB } from 'idb';
-import { useOcclusionStore } from '../store/useOcclusionStore';
+import { useOcclusionStore, ReviewFilter } from '../store/useOcclusionStore';
 import { updateLastViewedPage } from '../store/useRecentPdfs';
 import PdfPage from './PdfPage';
 import ReviewDashboard from './ReviewDashboard';
@@ -23,6 +23,7 @@ export default function PdfViewer({ fileData, fileHash, initialPage, onSync }: P
   const [drawMode, setDrawMode] = useState<boolean>(false);
   const [darkMode, setDarkMode] = useState<boolean>(false);
   const [showDashboard, setShowDashboard] = useState<boolean>(false);
+  const [reviewFilter, setReviewFilter] = useState<ReviewFilter>('all');
   const containerRef = useRef<HTMLDivElement>(null);
 
   const [outline, setOutline] = useState<any[]>([]);
@@ -314,6 +315,30 @@ export default function PdfViewer({ fileData, fileHash, initialPage, onSync }: P
           >
             👁️‍🗨️ Reveal All Pages
           </button>
+          <div className="filter-control">
+            <label htmlFor="review-filter-select" style={{ color: '#94a3b8', fontSize: '0.85rem', marginRight: '6px' }}>
+              Filter:
+            </label>
+            <select
+              id="review-filter-select"
+              value={reviewFilter}
+              onChange={e => setReviewFilter(e.target.value as ReviewFilter)}
+              style={{
+                background: '#1e293b',
+                color: '#e2e8f0',
+                border: '1px solid #334155',
+                borderRadius: '6px',
+                padding: '4px 8px',
+                fontSize: '0.85rem',
+                cursor: 'pointer',
+              }}
+            >
+              <option value="all">All masks</option>
+              <option value="last-impossible">Last = Impossible</option>
+              <option value="due-impossible">Due + Last = Impossible</option>
+              <option value="ever-impossible">Ever = Impossible</option>
+            </select>
+          </div>
         </div>
       )}
       {drawMode && (
@@ -361,6 +386,7 @@ export default function PdfViewer({ fileData, fileHash, initialPage, onSync }: P
               drawMode={drawMode}
               darkMode={darkMode}
               scrollContainerRef={containerRef}
+              reviewFilter={reviewFilter}
             />
           ))}
         </div>
