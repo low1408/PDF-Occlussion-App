@@ -69,6 +69,8 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
 
   // Navigable boxes: sorted + filtered by the active review filter.
   // Arrow-key navigation only cycles through these boxes.
+  // getSrsCard/isDue are inline helpers that capture srsCards — since srsCards is already
+  // listed as a dep, we suppress the rule to avoid listing the function references themselves.
   const navigableBoxes = useMemo(() => {
     if (reviewFilter === 'all') return sortedBoxes;
     return sortedBoxes.filter(box => {
@@ -105,11 +107,13 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
       : null;
 
   // Clamp or clear focusedBoxIndex when the navigable list shrinks (e.g., filter changed).
+  // focusedBoxIndex is in the deps so we always read the latest value; after setFocusedBoxIndex
+  // the next run will find the condition false (index 0 < length) and stop.
   useEffect(() => {
     if (focusedBoxIndex !== null && focusedBoxIndex >= navigableBoxes.length) {
       setFocusedBoxIndex(navigableBoxes.length > 0 ? 0 : null);
     }
-  }, [navigableBoxes.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [navigableBoxes.length, focusedBoxIndex]);
 
   // Advance focus to the next navigable box and hide the current reveal.
   const advanceFocus = (currentIndex: number | null) => {
@@ -362,6 +366,15 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
     setSelectedBoxIds(new Set());
   };
 
+  // Show a "0 matches" hint when a filter is active but no masks qualify on this page.
+  const shouldShowFilterEmptyHint =
+    !drawMode &&
+    reviewFilter !== 'all' &&
+    navigableBoxes.length === 0 &&
+    sortedBoxes.length > 0 &&
+    !revealedBoxId &&
+    selectedBoxIds.size === 0;
+
   return (
     <div
       ref={containerRef}
@@ -524,7 +537,7 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
       )}
 
       {/* Hint when a filter is active but no masks match on this page */}
-      {!drawMode && reviewFilter !== 'all' && navigableBoxes.length === 0 && sortedBoxes.length > 0 && !revealedBoxId && selectedBoxIds.size === 0 && (
+      {shouldShowFilterEmptyHint && (
         <div style={{
           position: 'fixed',
           bottom: 0,
