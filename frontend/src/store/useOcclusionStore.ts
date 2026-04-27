@@ -73,6 +73,16 @@ export interface PatchGroup {
   patches: HistoryPatch[];
 }
 
+export interface RecentPdfEntry {
+  fileHash: string;
+  fileName: string;
+  fileSize: number;
+  numPages: number;
+  lastViewedPage: number;
+  lastOpenedAt: number;
+  pdfData: ArrayBuffer;
+}
+
 interface OcclusionDB extends DBSchema {
   occlusions: {
     key: string;
@@ -89,12 +99,17 @@ interface OcclusionDB extends DBSchema {
     value: SrsCard;
     indexes: { 'by-doc': string };
   };
+  recent_pdfs: {
+    key: string;
+    value: RecentPdfEntry;
+    indexes: { 'by-lastOpened': number };
+  };
 }
 
-let dbPromise: Promise<IDBPDatabase<OcclusionDB>> | null = null;
+export let dbPromise: Promise<IDBPDatabase<OcclusionDB>> | null = null;
 let idbQueue: Promise<void> = Promise.resolve();
 if (typeof window !== 'undefined') {
-  dbPromise = openDB<OcclusionDB>('occlusion_engine', 3, {
+  dbPromise = openDB<OcclusionDB>('occlusion_engine', 4, {
     upgrade(db, oldVersion) {
       if (oldVersion < 1) {
         const store = db.createObjectStore('occlusions', { keyPath: 'id' });
@@ -108,6 +123,10 @@ if (typeof window !== 'undefined') {
         const srsStore = db.createObjectStore('srs_cards', { keyPath: 'occlusion_id' });
         srsStore.createIndex('by-doc', 'document_id');
       }
+      if (oldVersion < 4) {
+        const recentStore = db.createObjectStore('recent_pdfs', { keyPath: 'fileHash' });
+        recentStore.createIndex('by-lastOpened', 'lastOpenedAt');
+      }
     },
   });
 }
@@ -118,6 +137,10 @@ interface State {
   historyIndex: number;
   bookmarks: Bookmark[];
   srsCards: SrsCard[];
+
+  // Reveal-all state (ephemeral, not persisted)
+  revealAllPages: Set<number>;   // page indices with all occlusions revealed
+  revealAllDocument: boolean;     // true = every page is revealed
 
   loadBoxesForDocument: (documentId: string) => Promise<void>;
   addBox: (box: Box) => void;
@@ -130,6 +153,9 @@ interface State {
   toggleBookmark: (documentId: string, pageIndex: number, title?: string) => Promise<void>;
   recordGrade: (occlusionId: string, documentId: string, grade: SrsGrade) => void;
 
+  toggleRevealAllForPage: (pageIndex: number) => void;
+  toggleRevealAllForDocument: () => void;
+
   _saveToIDB: (boxesToSave: Box[]) => Promise<void>;
   _deleteFromIDB: (boxIds: string[]) => Promise<void>;
   _saveSrsCardToIDB: (card: SrsCard) => Promise<void>;
@@ -141,6 +167,8 @@ export const useOcclusionStore = create<State>((set, get) => ({
   historyIndex: -1,
   bookmarks: [],
   srsCards: [],
+  revealAllPages: new Set<number>(),
+  revealAllDocument: false,
 
   loadBoxesForDocument: async (documentId: string) => {
     if (!dbPromise) return;
@@ -328,6 +356,26 @@ export const useOcclusionStore = create<State>((set, get) => ({
         setTimeout(() => postReview().catch(err => console.warn('[SRS] Retry failed:', err)), 12000);
       }
     }).catch(err => console.warn('[SRS] Failed to sync review to backend:', err));
+  },
+
+  toggleRevealAllForPage: (pageIndex: number) => {
+    set((state) => {
+      const next = new Set(state.revealAllPages);
+      if (next.has(pageIndex)) {
+        next.delete(pageIndex);
+      } else {
+        next.add(pageIndex);
+      }
+      return { revealAllPages: next };
+    });
+  },
+
+  toggleRevealAllForDocument: () => {
+    set((state) => ({
+      revealAllDocument: !state.revealAllDocument,
+      // When toggling document-level off, also clear per-page reveals
+      revealAllPages: state.revealAllDocument ? new Set<number>() : state.revealAllPages,
+    }));
   },
 
   _saveSrsCardToIDB: async (card: SrsCard) => {

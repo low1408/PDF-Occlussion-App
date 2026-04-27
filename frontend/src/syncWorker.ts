@@ -2,7 +2,7 @@ import { openDB } from 'idb';
 
 async function sync() {
   try {
-    const db = await openDB('occlusion_engine', 3);
+    const db = await openDB('occlusion_engine', 4);
 
     // ---- Sync occlusions ----
     const occTx = db.transaction('occlusions', 'readonly');

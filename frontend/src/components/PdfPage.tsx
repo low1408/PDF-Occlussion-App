@@ -28,6 +28,10 @@ export default function PdfPage({ pageIndex, pdfDocument, scale, fileHash, drawM
   const toggleBookmark = useOcclusionStore(state => state.toggleBookmark);
   const isBookmarked = bookmarks.some(b => b.document_id === fileHash && b.page_index === pageIndex);
 
+  const revealAllPages = useOcclusionStore(state => state.revealAllPages);
+  const revealAllDocument = useOcclusionStore(state => state.revealAllDocument);
+  const revealAll = revealAllDocument || revealAllPages.has(pageIndex);
+
   // Pre-calculate container dimensions so it doesn't collapse when unmounted
   useEffect(() => {
     let active = true;
@@ -149,7 +153,7 @@ export default function PdfPage({ pageIndex, pdfDocument, scale, fileHash, drawM
         className={darkMode ? 'dark-canvas' : ''}
       />
       {viewport && (
-        <OcclusionLayer viewport={viewport} pageIndex={pageIndex} fileHash={fileHash} drawMode={drawMode} />
+        <OcclusionLayer viewport={viewport} pageIndex={pageIndex} fileHash={fileHash} drawMode={drawMode} revealAll={revealAll} />
       )}
     </div>
   );

@@ -1,8 +1,9 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import { openDB } from 'idb';
 import { useOcclusionStore } from '../store/useOcclusionStore';
+import { updateLastViewedPage } from '../store/useRecentPdfs';
 import PdfPage from './PdfPage';
 import ReviewDashboard from './ReviewDashboard';
 
@@ -11,13 +12,14 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 interface PdfViewerProps {
   fileData: ArrayBuffer;
   fileHash: string;
+  initialPage?: number;
   onSync: () => void;
 }
 
-export default function PdfViewer({ fileData, fileHash, onSync }: PdfViewerProps) {
+export default function PdfViewer({ fileData, fileHash, initialPage, onSync }: PdfViewerProps) {
   const [pdfDocument, setPdfDocument] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
   const [numPages, setNumPages] = useState<number>(0);
-  const [zoom, setZoom] = useState<number>(1.0);
+  const [zoom, setZoom] = useState<number>(2.3);
   const [drawMode, setDrawMode] = useState<boolean>(false);
   const [darkMode, setDarkMode] = useState<boolean>(false);
   const [showDashboard, setShowDashboard] = useState<boolean>(false);
@@ -32,6 +34,14 @@ export default function PdfViewer({ fileData, fileHash, onSync }: PdfViewerProps
   const addBox = useOcclusionStore(state => state.addBox);
   const historyIndex = useOcclusionStore(state => state.historyIndex);
   const historyLength = useOcclusionStore(state => state.history.length);
+
+  const toggleRevealAllForPage = useOcclusionStore(state => state.toggleRevealAllForPage);
+  const toggleRevealAllForDocument = useOcclusionStore(state => state.toggleRevealAllForDocument);
+  const revealAllDocument = useOcclusionStore(state => state.revealAllDocument);
+  const revealAllPages = useOcclusionStore(state => state.revealAllPages);
+
+  // Track currently visible page for the "Reveal Page" button
+  const [visiblePage, setVisiblePage] = useState<number>(1);
 
   // Keyboard shortcut: 'D' to toggle draw mode
   useEffect(() => {
@@ -57,9 +67,67 @@ export default function PdfViewer({ fileData, fileHash, onSync }: PdfViewerProps
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [undo, redo]);
 
+  // Track which page is most visible via IntersectionObserver
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || numPages === 0) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        let maxRatio = 0;
+        let maxPage = visiblePage;
+        for (const entry of entries) {
+          if (entry.intersectionRatio > maxRatio) {
+            maxRatio = entry.intersectionRatio;
+            const idx = Array.from(container.children).indexOf(entry.target as HTMLElement);
+            if (idx >= 0) maxPage = idx + 1;
+          }
+        }
+        if (maxRatio > 0) setVisiblePage(maxPage);
+      },
+      { root: container, threshold: [0, 0.25, 0.5, 0.75, 1] }
+    );
+
+    // Defer observation so children are mounted
+    const timer = setTimeout(() => {
+      for (const child of Array.from(container.children)) {
+        observer.observe(child);
+      }
+    }, 100);
+
+    return () => {
+      clearTimeout(timer);
+      observer.disconnect();
+    };
+  }, [numPages, containerRef.current]);
+
+  // Debounced save of the currently visible page to IDB (for resume-on-reopen)
+  useEffect(() => {
+    if (!fileHash || visiblePage < 1) return;
+    const timer = setTimeout(() => {
+      updateLastViewedPage(fileHash, visiblePage).catch(console.error);
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, [fileHash, visiblePage]);
+
+  // Scroll to initialPage after PDF finishes loading
+  const hasScrolledToInitial = useRef(false);
+  useEffect(() => {
+    if (!initialPage || initialPage <= 1 || hasScrolledToInitial.current) return;
+    if (!pdfDocument || numPages === 0) return;
+    const target = Math.min(initialPage, numPages);
+
+    // Wait for pages to render, then scroll
+    const timer = setTimeout(() => {
+      scrollToPage(null, target);
+      hasScrolledToInitial.current = true;
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [pdfDocument, numPages, initialPage]);
+
   const handleExport = async () => {
     try {
-      const db = await openDB('occlusion_engine', 1);
+      const db = await openDB('occlusion_engine', 4);
       const boxes = await db.getAllFromIndex('occlusions', 'by-doc', fileHash);
       const blob = new Blob([JSON.stringify(boxes, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
@@ -126,16 +194,40 @@ export default function PdfViewer({ fileData, fileHash, onSync }: PdfViewerProps
       if (Array.isArray(destArray)) {
         try {
           const ref = destArray[0];
-          targetIndex = await pdfDocument.getPageIndex(ref) + 1; // 0-based to 1-based
+          if (Number.isInteger(ref)) {
+            targetIndex = ref + 1;
+          } else {
+            targetIndex = await pdfDocument.getPageIndex(ref) + 1; // 0-based to 1-based
+          }
         } catch (e) {
           console.error("Could not resolve destination string/ref", e);
         }
       }
     }
-    if (targetIndex && containerRef.current) {
-      const el = containerRef.current.children[targetIndex - 1];
-      if (el) el.scrollIntoView({ behavior: 'smooth' });
-    }
+
+    const container = containerRef.current;
+    if (!targetIndex || !container) return;
+
+    const el = container.children[targetIndex - 1] as HTMLElement | undefined;
+    if (!el) return;
+
+    // Use getBoundingClientRect for reliable position regardless of offsetParent chain.
+    // elRect.top is the element's distance from the viewport top.
+    // containerRect.top is the container's distance from the viewport top.
+    // The difference gives the element's position relative to the container's visible area.
+    // Adding container.scrollTop converts that to an absolute scroll offset.
+    const jumpTo = () => {
+      const containerRect = container.getBoundingClientRect();
+      const elRect = el.getBoundingClientRect();
+      container.scrollTop += elRect.top - containerRect.top;
+    };
+
+    // Pass 1: instant jump to the target page.
+    // This triggers IntersectionObserver to render pages around the target.
+    jumpTo();
+
+    // Pass 2: after lazy-rendered pages resize and layout stabilises, correct.
+    setTimeout(jumpTo, 0);
   };
 
   const renderOutline = (items: any[]) => items.map((item, idx) => (
@@ -206,6 +298,24 @@ export default function PdfViewer({ fileData, fileHash, onSync }: PdfViewerProps
           <button onClick={() => setZoom(z => Math.min(5.0, z + 0.2))}>+</button>
         </div>
       </div>
+      {!drawMode && (
+        <div className="reveal-controls-banner">
+          <button
+            id="reveal-page-btn"
+            className={`reveal-btn ${revealAllPages.has(visiblePage) ? 'active' : ''}`}
+            onClick={() => toggleRevealAllForPage(visiblePage)}
+          >
+            👁️ Reveal Page {visiblePage}
+          </button>
+          <button
+            id="reveal-all-btn"
+            className={`reveal-btn ${revealAllDocument ? 'active' : ''}`}
+            onClick={toggleRevealAllForDocument}
+          >
+            👁️‍🗨️ Reveal All Pages
+          </button>
+        </div>
+      )}
       {drawMode && (
         <div className="draw-mode-banner">
           DRAW MODE ACTIVE — Click and drag to create occlusions. Press <kbd>D</kbd> to switch back to Review Mode.
