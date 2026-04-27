@@ -334,9 +334,11 @@ export default function PdfViewer({ fileData, fileHash, initialPage, onSync }: P
               }}
             >
               <option value="all">All masks</option>
-              <option value="last-impossible">Last = Impossible</option>
-              <option value="due-impossible">Due + Last = Impossible</option>
-              <option value="ever-impossible">Ever = Impossible</option>
+              <option value="ungraded">⬛ Ungraded</option>
+              <option value="easy">🟢 Easy</option>
+              <option value="ok">🔵 OK</option>
+              <option value="hard">🟠 Hard</option>
+              <option value="impossible">🔴 Impossible</option>
             </select>
           </div>
         </div>

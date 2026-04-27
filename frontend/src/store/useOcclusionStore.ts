@@ -35,12 +35,14 @@ export interface SrsCard {
   ever_impossible: boolean;
 }
 
-/** Filter mode for review-mode arrow-key navigation. */
+/** Filter mode for review-mode arrow-key navigation — based solely on last grade. */
 export type ReviewFilter =
   | 'all'
-  | 'last-impossible'    // last_grade === 'impossible'
-  | 'due-impossible'     // currently due AND last_grade === 'impossible'
-  | 'ever-impossible';   // ever_impossible === true
+  | 'ungraded'     // no grade recorded yet (black)
+  | 'easy'
+  | 'ok'
+  | 'hard'
+  | 'impossible';
 
 export type SrsGrade = 'easy' | 'ok' | 'hard' | 'impossible';
 

@@ -2,14 +2,14 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import { useOcclusionStore, Box, SrsGrade, SrsCard, ReviewFilter } from '../store/useOcclusionStore';
 
-// Border color for each grade (used when box is not revealed/selected/focused with overrides).
+// Fill color for each grade (the mask is fully painted with this color).
 const GRADE_COLORS: Record<SrsGrade, string> = {
   easy:       '#10b981', // emerald
   ok:         '#06b6d4', // cyan
   hard:       '#f97316', // orange
   impossible: '#ef4444', // red
 };
-const DEFAULT_BORDER = '#fbbf24'; // amber — no grade yet
+const DEFAULT_FILL = '#000000'; // black — no grade yet
 
 interface OcclusionLayerProps {
   viewport: pdfjsLib.PageViewport;
@@ -46,10 +46,10 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
     return new Date(card.next_review_at) <= new Date();
   };
 
-  // Helper: get the grade-derived border color for a box.
+  // Helper: get the grade-derived fill color for a box.
   const getGradeColor = (boxId: string): string => {
     const card = getSrsCard(boxId);
-    if (!card?.last_grade) return DEFAULT_BORDER;
+    if (!card?.last_grade) return DEFAULT_FILL;
     return GRADE_COLORS[card.last_grade];
   };
 
@@ -76,14 +76,12 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
     return sortedBoxes.filter(box => {
       const card = getSrsCard(box.id);
       switch (reviewFilter) {
-        case 'last-impossible':
-          return card?.last_grade === 'impossible';
-        case 'due-impossible':
-          return card?.last_grade === 'impossible' && isDue(card);
-        case 'ever-impossible':
-          return card?.ever_impossible === true;
-        default:
-          return true;
+        case 'ungraded':    return !card?.last_grade;
+        case 'easy':        return card?.last_grade === 'easy';
+        case 'ok':          return card?.last_grade === 'ok';
+        case 'hard':        return card?.last_grade === 'hard';
+        case 'impossible':  return card?.last_grade === 'impossible';
+        default:            return true;
       }
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -409,12 +407,18 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
         const isFocused = !drawMode && focusedBox?.id === box.id;
         const gradeColor = getGradeColor(box.id);
 
-        // Precedence: draw-selected (red) > revealed (green border) > grade color border.
-        // Focused adds a blue glow shadow so grade color remains visible on the border.
+        // Fill precedence: draw-selected (red) > revealed (transparent) > grade fill color.
+        // Border always mirrors the fill for a solid look; focused adds a blue glow.
+        const getFillColor = () => {
+          if (isRevealed) return 'transparent';          // Show PDF content underneath
+          if (drawMode && isSelected) return '#ef4444';  // Red tint for deletion selection
+          return gradeColor;                             // Grade-derived fill (or black)
+        };
+
         const getBorderColor = () => {
-          if (drawMode && isSelected) return '#ef4444'; // Red for deletion
-          if (isRevealed) return '#22c55e';             // Green for revealed
-          return gradeColor;                            // Grade-derived color (or default amber)
+          if (isRevealed) return '#22c55e';              // Green border when revealed
+          if (drawMode && isSelected) return '#ef4444';  // Red border when selected
+          return gradeColor;                             // Match fill color
         };
 
         const getBoxShadow = () => {
@@ -431,7 +435,7 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
               style={{
                 position: 'absolute',
                 inset: 0,
-                backgroundColor: isRevealed ? 'transparent' : '#111827',
+                backgroundColor: getFillColor(),
                 borderRadius: '2px',
                 border: `2px solid ${getBorderColor()}`,
                 opacity: 1,
