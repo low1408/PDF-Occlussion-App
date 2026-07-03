@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
+import 'pdfjs-dist/web/pdf_viewer.css';
 import OcclusionLayer from './OcclusionLayer';
 import { useOcclusionStore, ReviewFilter } from '../store/useOcclusionStore';
 
@@ -17,6 +18,7 @@ interface PdfPageProps {
 export default function PdfPage({ pageIndex, pdfDocument, scale, fileHash, drawMode, darkMode, scrollContainerRef, reviewFilter }: PdfPageProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const textLayerRef = useRef<HTMLDivElement>(null);
   
   // Track visibility purely imperatively (no useState) to avoid React render cycles on scroll
   const isVisibleRef = useRef(false);
@@ -57,11 +59,16 @@ export default function PdfPage({ pageIndex, pdfDocument, scale, fileHash, drawM
     let isCancelled = false;
     let renderTask: pdfjsLib.RenderTask | null = null;
     let pageProxy: pdfjsLib.PDFPageProxy | null = null;
+    let textLayerInstance: pdfjsLib.TextLayer | null = null;
 
     const cleanupPage = () => {
       if (renderTask) {
         renderTask.cancel();
         renderTask = null;
+      }
+      if (textLayerInstance) {
+        textLayerInstance.cancel();
+        textLayerInstance = null;
       }
       if (pageProxy && typeof (pageProxy as any).cleanup === 'function') {
         (pageProxy as any).cleanup();
@@ -71,6 +78,10 @@ export default function PdfPage({ pageIndex, pdfDocument, scale, fileHash, drawM
       if (canvasRef.current) {
         const ctx = canvasRef.current.getContext('2d');
         if (ctx) ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+      }
+      // Clear the text layer container
+      if (textLayerRef.current) {
+        textLayerRef.current.innerHTML = '';
       }
     };
 
@@ -101,6 +112,20 @@ export default function PdfPage({ pageIndex, pdfDocument, scale, fileHash, drawM
         });
 
         await renderTask.promise;
+
+        // Render the text layer overlay
+        if (!isCancelled && textLayerRef.current) {
+          textLayerRef.current.innerHTML = '';
+          const textContent = await pageProxy.getTextContent();
+          
+          textLayerInstance = new pdfjsLib.TextLayer({
+            textContentSource: textContent,
+            container: textLayerRef.current,
+            viewport: vp,
+          });
+
+          await textLayerInstance.render();
+        }
       } catch (err: any) {
         if (!isCancelled && err.name !== 'RenderingCancelledException') {
           console.error(`Page ${pageIndex} render error:`, err);
@@ -138,6 +163,9 @@ export default function PdfPage({ pageIndex, pdfDocument, scale, fileHash, drawM
         width: containerWidth ? `${containerWidth}px` : '100%', 
         height: containerHeight ? `${containerHeight}px` : '800px',
         position: 'relative',
+        ['--scale-factor' as any]: scale,
+        ['--total-scale-factor' as any]: scale,
+        ['--user-unit' as any]: 1,
       }}
     >
       <button 
@@ -152,6 +180,10 @@ export default function PdfPage({ pageIndex, pdfDocument, scale, fileHash, drawM
       <canvas
         ref={canvasRef}
         className={darkMode ? 'dark-canvas' : ''}
+      />
+      <div 
+        ref={textLayerRef}
+        className="textLayer"
       />
       {viewport && (
         <OcclusionLayer viewport={viewport} pageIndex={pageIndex} fileHash={fileHash} drawMode={drawMode} revealAll={revealAll} reviewFilter={reviewFilter} />

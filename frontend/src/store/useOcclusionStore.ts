@@ -198,6 +198,7 @@ export const useOcclusionStore = create<State>((set, get) => ({
     if (!dbPromise || boxesToSave.length === 0) return;
     idbQueue = idbQueue.then(async () => {
       const db = await dbPromise;
+      if (!db) return;
       const tx = db.transaction('occlusions', 'readwrite');
       for (const b of boxesToSave) {
         tx.store.put(b);
@@ -211,6 +212,7 @@ export const useOcclusionStore = create<State>((set, get) => ({
     if (!dbPromise || boxIds.length === 0) return;
     idbQueue = idbQueue.then(async () => {
       const db = await dbPromise;
+      if (!db) return;
       const tx = db.transaction('occlusions', 'readwrite');
       for (const id of boxIds) {
         tx.store.delete(id);
@@ -400,6 +402,7 @@ export const useOcclusionStore = create<State>((set, get) => ({
     if (!dbPromise) return;
     idbQueue = idbQueue.then(async () => {
       const db = await dbPromise;
+      if (!db) return;
       const tx = db.transaction('srs_cards', 'readwrite');
       tx.store.put(card);
       await tx.done;

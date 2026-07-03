@@ -695,3 +695,17 @@ body {
 .dark-mode .page-bookmark-btn:hover {
   background: #1e293b;
 }
+
+/* Ensure canvas is below text layer, and text layer has correct premium selection highlight */
+.pdf-page-wrapper canvas {
+  position: relative;
+  z-index: 1;
+}
+
+.pdf-page-wrapper .textLayer {
+  z-index: 2 !important;
+}
+
+.textLayer ::selection {
+  background: rgba(99, 102, 241, 0.3) !important; /* Premium Indigo selection */
+}

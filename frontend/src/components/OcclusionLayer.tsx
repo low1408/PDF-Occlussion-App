@@ -23,10 +23,6 @@ interface OcclusionLayerProps {
 export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode, revealAll, reviewFilter }: OcclusionLayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const wasDragged = useRef(false);
-  // In review mode, we store the pointer id here so we can call setPointerCapture
-  // only after we confirm a real drag (movement > 5px). This keeps plain clicks
-  // fully intact — handleBoxClick still fires normally.
-  const pendingPointerIdRef = useRef<number | null>(null);
 
   const allBoxes = useOcclusionStore(state => state.boxes);
   const addBox = useOcclusionStore(state => state.addBox);
@@ -40,11 +36,7 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
   const getSrsCard = (boxId: string): SrsCard | undefined =>
     srsCards.find(c => c.occlusion_id === boxId);
 
-  // Helper: is a card currently due for review?
-  const isDue = (card: SrsCard | undefined): boolean => {
-    if (!card) return true; // never reviewed → treat as due
-    return new Date(card.next_review_at) <= new Date();
-  };
+
 
   // Helper: get the grade-derived fill color for a box.
   const getGradeColor = (boxId: string): string => {
@@ -87,16 +79,31 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sortedBoxes, srsCards, reviewFilter]);
 
-  const [isDrawing, setIsDrawing] = useState(false);
+  const [, setIsDrawing] = useState(false);
   const [isLassoing, setIsLassoing] = useState(false);
   const [selectedBoxIds, setSelectedBoxIds] = useState<Set<string>>(new Set());
   const [revealedBoxId, setRevealedBoxId] = useState<string | null>(null);
-  const [startPos, setStartPos] = useState<{ x: number, y: number } | null>(null);
   const [tempBox, setTempBox] = useState<{ x: number, y: number, w: number, h: number } | null>(null);
 
   // Per-page focus index for keyboard navigation in review mode.
   // null = no mask focused on this page.
   const [focusedBoxIndex, setFocusedBoxIndex] = useState<number | null>(null);
+
+  // Refs for tracking active drag/lasso states in parent pointer event listeners
+  const isDrawingRef = useRef(false);
+  const isLassoingRef = useRef(false);
+  const startPosRef = useRef<{ x: number, y: number } | null>(null);
+  const tempBoxRef = useRef<{ x: number, y: number, w: number, h: number } | null>(null);
+  const drawModeRef = useRef(drawMode);
+  const boxesRef = useRef(boxes);
+
+  useEffect(() => {
+    drawModeRef.current = drawMode;
+  }, [drawMode]);
+
+  useEffect(() => {
+    boxesRef.current = boxes;
+  }, [boxes]);
 
   // Derive the focused box from the index (guarded against out-of-bounds after deletions/filter changes).
   const focusedBox: Box | null =
@@ -197,133 +204,181 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [selectedBoxIds, deleteBox, drawMode, sortedBoxes, navigableBoxes, focusedBox, focusedBoxIndex, revealedBoxId, recordGrade, fileHash]);
 
-  const getPointerPos = (e: React.PointerEvent) => {
-    if (!containerRef.current) return { x: 0, y: 0 };
-    const rect = containerRef.current.getBoundingClientRect();
-    return {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top,
+  // Hook up event delegation on the parent container (.pdf-page-wrapper)
+  useEffect(() => {
+    const parent = containerRef.current?.parentElement;
+    if (!parent) return;
+
+    const getPointerPosFromParent = (clientX: number, clientY: number) => {
+      const rect = parent.getBoundingClientRect();
+      return {
+        x: clientX - rect.left,
+        y: clientY - rect.top,
+      };
     };
-  };
 
-  const handlePointerDown = (e: React.PointerEvent) => {
-    wasDragged.current = false;
+    const handlePointerDown = (e: PointerEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.classList.contains('occlusion-box')) return;
+      if (target.closest('.srs-grade-bar') || target.closest('.page-bookmark-btn') || target.closest('.share-controls') || target.closest('.history-controls')) return;
 
-    if (drawMode) {
-      // Draw mode: Shift+drag = lasso, plain drag = draw new box
-      if (e.target !== containerRef.current && (e.target as HTMLElement).classList.contains('occlusion-box')) return;
-      const pos = getPointerPos(e);
-      if (e.shiftKey) {
-        setIsLassoing(true);
+      const isShift = e.shiftKey;
+      const shouldStartDrag = drawModeRef.current || isShift;
+      if (!shouldStartDrag) return;
+
+      wasDragged.current = false;
+      const pos = getPointerPosFromParent(e.clientX, e.clientY);
+      startPosRef.current = pos;
+
+      if (drawModeRef.current) {
+        if (isShift) {
+          setIsLassoing(true);
+          isLassoingRef.current = true;
+        } else {
+          setIsDrawing(true);
+          isDrawingRef.current = true;
+          setSelectedBoxIds(new Set());
+        }
       } else {
-        setIsDrawing(true);
+        // Review Mode + Shift -> Lasso
+        setIsLassoing(true);
+        isLassoingRef.current = true;
         setSelectedBoxIds(new Set());
       }
-      setRevealedBoxId(null);
-      setStartPos(pos);
-      setTempBox({ x: pos.x, y: pos.y, w: 0, h: 0 });
-      e.currentTarget.setPointerCapture(e.pointerId);
-    } else {
-      // Review mode: just record where the potential drag started.
-      // Do NOT capture, do NOT set isLassoing, do NOT clear revealedBoxId yet.
-      // We only commit to a lasso once handlePointerMove confirms movement > 5px.
-      // This ensures plain clicks still reach handleBoxClick untouched.
-      pendingPointerIdRef.current = e.pointerId;
-      setStartPos(getPointerPos(e));
-    }
-  };
 
-  const handlePointerMove = (e: React.PointerEvent) => {
-    if (!isDrawing && !isLassoing) {
-      // Review mode: check if we've moved enough to commit to a lasso
-      if (!drawMode && pendingPointerIdRef.current !== null && startPos) {
-        const currentPos = getPointerPos(e);
-        const w = Math.abs(currentPos.x - startPos.x);
-        const h = Math.abs(currentPos.y - startPos.y);
-        if (w > 5 || h > 5) {
-          // Confirmed drag — now start the lasso
-          wasDragged.current = true;
-          setIsLassoing(true);
-          setRevealedBoxId(null);
-          setFocusedBoxIndex(null);
-          setTempBox({
-            x: Math.min(startPos.x, currentPos.x),
-            y: Math.min(startPos.y, currentPos.y),
-            w,
-            h,
+      setRevealedBoxId(null);
+      setFocusedBoxIndex(null);
+
+      const initialBox = { x: pos.x, y: pos.y, w: 0, h: 0 };
+      setTempBox(initialBox);
+      tempBoxRef.current = initialBox;
+
+      parent.setPointerCapture(e.pointerId);
+    };
+
+    const handlePointerMove = (e: PointerEvent) => {
+      if (!isDrawingRef.current && !isLassoingRef.current) return;
+      if (!startPosRef.current) return;
+
+      const currentPos = getPointerPosFromParent(e.clientX, e.clientY);
+      const x = Math.min(startPosRef.current.x, currentPos.x);
+      const y = Math.min(startPosRef.current.y, currentPos.y);
+      const w = Math.abs(currentPos.x - startPosRef.current.x);
+      const h = Math.abs(currentPos.y - startPosRef.current.y);
+
+      if (w > 5 || h > 5) {
+        wasDragged.current = true;
+      }
+
+      const updatedBox = { x, y, w, h };
+      setTempBox(updatedBox);
+      tempBoxRef.current = updatedBox;
+    };
+
+    const handlePointerUp = (e: PointerEvent) => {
+      const wasLasso = isLassoingRef.current;
+      const wasDraw = isDrawingRef.current;
+
+      isDrawingRef.current = false;
+      isLassoingRef.current = false;
+      setIsDrawing(false);
+      setIsLassoing(false);
+
+      const startPos = startPosRef.current;
+      const tempBox = tempBoxRef.current;
+      startPosRef.current = null;
+      tempBoxRef.current = null;
+      setTempBox(null);
+
+      try {
+        parent.releasePointerCapture(e.pointerId);
+      } catch (err) {}
+
+      if ((!wasDraw && !wasLasso) || !tempBox || !startPos) return;
+
+      if (wasLasso) {
+        if (tempBox.w > 5 && tempBox.h > 5) {
+          const tempPdfRect = [
+            viewport.convertToPdfPoint(tempBox.x, tempBox.y),
+            viewport.convertToPdfPoint(tempBox.x + tempBox.w, tempBox.y + tempBox.h)
+          ];
+          const lassoXMin = Math.min(tempPdfRect[0][0], tempPdfRect[1][0]);
+          const lassoXMax = Math.max(tempPdfRect[0][0], tempPdfRect[1][0]);
+          const lassoYMin = Math.min(tempPdfRect[0][1], tempPdfRect[1][1]);
+          const lassoYMax = Math.max(tempPdfRect[0][1], tempPdfRect[1][1]);
+
+          setSelectedBoxIds(prev => {
+            const next = new Set(prev);
+            boxesRef.current.forEach(box => {
+              if (box.is_deleted) return;
+              const bXMin = Math.min(box.pdfRect[0], box.pdfRect[2]);
+              const bXMax = Math.max(box.pdfRect[0], box.pdfRect[2]);
+              const bYMin = Math.min(box.pdfRect[1], box.pdfRect[3]);
+              const bYMax = Math.max(box.pdfRect[1], box.pdfRect[3]);
+              if (bXMin <= lassoXMax && bXMax >= lassoXMin && bYMin <= lassoYMax && bYMax >= lassoYMin) {
+                next.add(box.id);
+              }
+            });
+            return next;
           });
-          // Capture the pointer now that we know it's a real drag
-          e.currentTarget.setPointerCapture(pendingPointerIdRef.current);
-          pendingPointerIdRef.current = null;
+        }
+      } else if (wasDraw) {
+        if (tempBox.w > 5 && tempBox.h > 5) {
+          const p1 = viewport.convertToPdfPoint(tempBox.x, tempBox.y);
+          const p2 = viewport.convertToPdfPoint(tempBox.x + tempBox.w, tempBox.y + tempBox.h);
+
+          const newBox: Box = {
+            id: crypto.randomUUID(),
+            document_id: fileHash,
+            page_index: pageIndex,
+            pdfRect: [p1[0], p1[1], p2[0], p2[1]],
+            is_deleted: false,
+            last_modified: Date.now()
+          };
+
+          addBox(newBox);
         }
       }
-      return;
-    }
-    const currentPos = getPointerPos(e);
-    const x = Math.min(startPos.x, currentPos.x);
-    const y = Math.min(startPos.y, currentPos.y);
-    const w = Math.abs(currentPos.x - startPos.x);
-    const h = Math.abs(currentPos.y - startPos.y);
-    if (w > 5 || h > 5) wasDragged.current = true;
-    setTempBox({ x, y, w, h });
-  };
+    };
 
-  const handlePointerUp = (e: React.PointerEvent) => {
-    // Clear any pending review-mode drag tracker (covers the case where the
-    // pointer was released before movement exceeded the 5px threshold — i.e. a plain click).
-    pendingPointerIdRef.current = null;
-
-    if ((!isDrawing && !isLassoing) || !tempBox || !startPos) return;
-
-    if (isLassoing) {
-      setIsLassoing(false);
-      if (tempBox.w > 5 && tempBox.h > 5) {
-        const tempPdfRect = [
-          viewport.convertToPdfPoint(tempBox.x, tempBox.y),
-          viewport.convertToPdfPoint(tempBox.x + tempBox.w, tempBox.y + tempBox.h)
-        ];
-        const lassoXMin = Math.min(tempPdfRect[0][0], tempPdfRect[1][0]);
-        const lassoXMax = Math.max(tempPdfRect[0][0], tempPdfRect[1][0]);
-        const lassoYMin = Math.min(tempPdfRect[0][1], tempPdfRect[1][1]);
-        const lassoYMax = Math.max(tempPdfRect[0][1], tempPdfRect[1][1]);
-
-        setSelectedBoxIds(prev => {
-          const next = new Set(prev);
-          boxes.forEach(box => {
-            if (box.is_deleted) return;
-            const bXMin = Math.min(box.pdfRect[0], box.pdfRect[2]);
-            const bXMax = Math.max(box.pdfRect[0], box.pdfRect[2]);
-            const bYMin = Math.min(box.pdfRect[1], box.pdfRect[3]);
-            const bYMax = Math.max(box.pdfRect[1], box.pdfRect[3]);
-            if (bXMin <= lassoXMax && bXMax >= lassoXMin && bYMin <= lassoYMax && bYMax >= lassoYMin) {
-              next.add(box.id);
-            }
-          });
-          return next;
-        });
+    const handleParentClick = (e: MouseEvent) => {
+      if (wasDragged.current) {
+        wasDragged.current = false;
+        return;
       }
-    } else {
-      setIsDrawing(false);
 
-      if (tempBox.w > 5 && tempBox.h > 5) {
-        const p1 = viewport.convertToPdfPoint(tempBox.x, tempBox.y);
-        const p2 = viewport.convertToPdfPoint(tempBox.x + tempBox.w, tempBox.y + tempBox.h);
-
-        const newBox: Box = {
-          id: crypto.randomUUID(),
-          document_id: fileHash,
-          page_index: pageIndex,
-          pdfRect: [p1[0], p1[1], p2[0], p2[1]],
-          is_deleted: false,
-          last_modified: Date.now()
-        };
-
-        addBox(newBox);
+      const target = e.target as HTMLElement;
+      if (
+        target.classList.contains('occlusion-box') || 
+        target.closest('.srs-grade-bar') ||
+        target.closest('.page-bookmark-btn')
+      ) {
+        return;
       }
-    }
-    setTempBox(null);
-    e.currentTarget.releasePointerCapture(e.pointerId);
-  };
+
+      const sel = window.getSelection();
+      if (sel && !sel.isCollapsed) {
+        return;
+      }
+
+      setSelectedBoxIds(new Set());
+      setRevealedBoxId(null);
+      setFocusedBoxIndex(null);
+    };
+
+    parent.addEventListener('pointerdown', handlePointerDown);
+    parent.addEventListener('pointermove', handlePointerMove);
+    parent.addEventListener('pointerup', handlePointerUp);
+    parent.addEventListener('click', handleParentClick);
+
+    return () => {
+      parent.removeEventListener('pointerdown', handlePointerDown);
+      parent.removeEventListener('pointermove', handlePointerMove);
+      parent.removeEventListener('pointerup', handlePointerUp);
+      parent.removeEventListener('click', handleParentClick);
+    };
+  }, [viewport, fileHash, pageIndex, addBox]);
+
 
   const handleBoxClick = (e: React.MouseEvent, boxId: string) => {
     e.stopPropagation();
@@ -377,22 +432,13 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
     <div
       ref={containerRef}
       className="occlusion-layer"
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
       style={{
         position: 'absolute',
         top: 0, left: 0, right: 0, bottom: 0,
         zIndex: 10,
         cursor: drawMode ? 'crosshair' : 'default',
-        pointerEvents: 'auto',
+        pointerEvents: drawMode ? 'auto' : 'none',
         touchAction: drawMode ? 'none' : 'auto'
-      }}
-      onClick={() => {
-        if (wasDragged.current) return;
-        setSelectedBoxIds(new Set());
-        setRevealedBoxId(null);
-        setFocusedBoxIndex(null);
       }}
     >
       {sortedBoxes.map(box => {
@@ -574,6 +620,7 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
           alignItems: 'center',
           gap: '16px',
           zIndex: 9999,
+          pointerEvents: 'auto',
           backgroundColor: '#1f2937',
           borderTop: '2px solid #ef4444',
           padding: '14px 24px',
