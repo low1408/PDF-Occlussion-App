@@ -20,6 +20,17 @@ interface OcclusionLayerProps {
   reviewFilter: ReviewFilter;
 }
 
+const parseNote = (noteStr?: string): { text: string; type: 'occlusion' | 'highlight' } => {
+  if (!noteStr) return { text: '', type: 'occlusion' };
+  try {
+    const parsed = JSON.parse(noteStr);
+    if (parsed && typeof parsed === 'object' && parsed.type === 'highlight') {
+      return { text: parsed.text || '', type: 'highlight' };
+    }
+  } catch (e) {}
+  return { text: noteStr, type: 'occlusion' };
+};
+
 export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode, revealAll, reviewFilter }: OcclusionLayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const wasDragged = useRef(false);
@@ -29,6 +40,7 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
   const deleteBox = useOcclusionStore(state => state.deleteBox);
   const recordGrade = useOcclusionStore(state => state.recordGrade);
   const srsCards = useOcclusionStore(state => state.srsCards);
+  const updateBoxNote = useOcclusionStore(state => state.updateBoxNote);
 
   const boxes = allBoxes.filter(b => b.document_id === fileHash && b.page_index === pageIndex);
 
@@ -64,8 +76,14 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
   // getSrsCard/isDue are inline helpers that capture srsCards — since srsCards is already
   // listed as a dep, we suppress the rule to avoid listing the function references themselves.
   const navigableBoxes = useMemo(() => {
-    if (reviewFilter === 'all') return sortedBoxes;
-    return sortedBoxes.filter(box => {
+    // Exclude highlights from keyboard navigable boxes
+    const occlusionsOnly = sortedBoxes.filter(box => {
+      const info = parseNote(box.note);
+      return info.type !== 'highlight';
+    });
+
+    if (reviewFilter === 'all') return occlusionsOnly;
+    return occlusionsOnly.filter(box => {
       const card = getSrsCard(box.id);
       switch (reviewFilter) {
         case 'ungraded':    return !card?.last_grade;
@@ -88,6 +106,9 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
   // Per-page focus index for keyboard navigation in review mode.
   // null = no mask focused on this page.
   const [focusedBoxIndex, setFocusedBoxIndex] = useState<number | null>(null);
+
+  const [selectionTooltip, setSelectionTooltip] = useState<{ x: number, y: number, text: string, rect: any } | null>(null);
+  const [activePopoverBoxId, setActivePopoverBoxId] = useState<string | null>(null);
 
   // Refs for tracking active drag/lasso states in parent pointer event listeners
   const isDrawingRef = useRef(false);
@@ -218,8 +239,17 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
     };
 
     const handlePointerDown = (e: PointerEvent) => {
+      // Clear selection tooltip
+      setSelectionTooltip(null);
+
       const target = e.target as HTMLElement;
-      if (target.classList.contains('occlusion-box')) return;
+      // If clicking inside the active note popover, let the popover handle it (don't start drag, don't clear popover)
+      if (target.closest('.note-popover')) return;
+
+      // If not clicking active popover, clear popover state
+      setActivePopoverBoxId(null);
+
+      if (target.classList.contains('occlusion-box') || target.classList.contains('highlight-overlay')) return;
       if (target.closest('.srs-grade-bar') || target.closest('.page-bookmark-btn') || target.closest('.share-controls') || target.closest('.history-controls')) return;
 
       const isShift = e.shiftKey;
@@ -294,49 +324,76 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
         parent.releasePointerCapture(e.pointerId);
       } catch (err) {}
 
-      if ((!wasDraw && !wasLasso) || !tempBox || !startPos) return;
+      if (wasLasso || wasDraw) {
+        if (!tempBox || !startPos) return;
 
-      if (wasLasso) {
-        if (tempBox.w > 5 && tempBox.h > 5) {
-          const tempPdfRect = [
-            viewport.convertToPdfPoint(tempBox.x, tempBox.y),
-            viewport.convertToPdfPoint(tempBox.x + tempBox.w, tempBox.y + tempBox.h)
-          ];
-          const lassoXMin = Math.min(tempPdfRect[0][0], tempPdfRect[1][0]);
-          const lassoXMax = Math.max(tempPdfRect[0][0], tempPdfRect[1][0]);
-          const lassoYMin = Math.min(tempPdfRect[0][1], tempPdfRect[1][1]);
-          const lassoYMax = Math.max(tempPdfRect[0][1], tempPdfRect[1][1]);
+        if (wasLasso) {
+          if (tempBox.w > 5 && tempBox.h > 5) {
+            const tempPdfRect = [
+              viewport.convertToPdfPoint(tempBox.x, tempBox.y),
+              viewport.convertToPdfPoint(tempBox.x + tempBox.w, tempBox.y + tempBox.h)
+            ];
+            const lassoXMin = Math.min(tempPdfRect[0][0], tempPdfRect[1][0]);
+            const lassoXMax = Math.max(tempPdfRect[0][0], tempPdfRect[1][0]);
+            const lassoYMin = Math.min(tempPdfRect[0][1], tempPdfRect[1][1]);
+            const lassoYMax = Math.max(tempPdfRect[0][1], tempPdfRect[1][1]);
 
-          setSelectedBoxIds(prev => {
-            const next = new Set(prev);
-            boxesRef.current.forEach(box => {
-              if (box.is_deleted) return;
-              const bXMin = Math.min(box.pdfRect[0], box.pdfRect[2]);
-              const bXMax = Math.max(box.pdfRect[0], box.pdfRect[2]);
-              const bYMin = Math.min(box.pdfRect[1], box.pdfRect[3]);
-              const bYMax = Math.max(box.pdfRect[1], box.pdfRect[3]);
-              if (bXMin <= lassoXMax && bXMax >= lassoXMin && bYMin <= lassoYMax && bYMax >= lassoYMin) {
-                next.add(box.id);
-              }
+            setSelectedBoxIds(prev => {
+              const next = new Set(prev);
+              boxesRef.current.forEach(box => {
+                if (box.is_deleted) return;
+                const bXMin = Math.min(box.pdfRect[0], box.pdfRect[2]);
+                const bXMax = Math.max(box.pdfRect[0], box.pdfRect[2]);
+                const bYMin = Math.min(box.pdfRect[1], box.pdfRect[3]);
+                const bYMax = Math.max(box.pdfRect[1], box.pdfRect[3]);
+                if (bXMin <= lassoXMax && bXMax >= lassoXMin && bYMin <= lassoYMax && bYMax >= lassoYMin) {
+                  next.add(box.id);
+                }
+              });
+              return next;
             });
-            return next;
-          });
+          }
+        } else if (wasDraw) {
+          if (tempBox.w > 5 && tempBox.h > 5) {
+            const p1 = viewport.convertToPdfPoint(tempBox.x, tempBox.y);
+            const p2 = viewport.convertToPdfPoint(tempBox.x + tempBox.w, tempBox.y + tempBox.h);
+
+            const newBox: Box = {
+              id: crypto.randomUUID(),
+              document_id: fileHash,
+              page_index: pageIndex,
+              pdfRect: [p1[0], p1[1], p2[0], p2[1]],
+              is_deleted: false,
+              last_modified: Date.now()
+            };
+
+            addBox(newBox);
+          }
         }
-      } else if (wasDraw) {
-        if (tempBox.w > 5 && tempBox.h > 5) {
-          const p1 = viewport.convertToPdfPoint(tempBox.x, tempBox.y);
-          const p2 = viewport.convertToPdfPoint(tempBox.x + tempBox.w, tempBox.y + tempBox.h);
+        return;
+      }
 
-          const newBox: Box = {
-            id: crypto.randomUUID(),
-            document_id: fileHash,
-            page_index: pageIndex,
-            pdfRect: [p1[0], p1[1], p2[0], p2[1]],
-            is_deleted: false,
-            last_modified: Date.now()
-          };
+      // Check text selection to show tooltip
+      const sel = window.getSelection();
+      if (sel && !sel.isCollapsed && sel.rangeCount > 0) {
+        const range = sel.getRangeAt(0);
+        if (parent.contains(sel.anchorNode)) {
+          const rect = range.getBoundingClientRect();
+          const parentRect = parent.getBoundingClientRect();
 
-          addBox(newBox);
+          setSelectionTooltip({
+            x: rect.left - parentRect.left + rect.width / 2,
+            y: rect.top - parentRect.top,
+            text: sel.toString().trim(),
+            rect: {
+              left: rect.left,
+              top: rect.top,
+              right: rect.right,
+              bottom: rect.bottom,
+              width: rect.width,
+              height: rect.height,
+            }
+          });
         }
       }
     };
@@ -348,10 +405,14 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
       }
 
       const target = e.target as HTMLElement;
+      if (target.closest('.note-popover')) return;
+
       if (
         target.classList.contains('occlusion-box') || 
+        target.classList.contains('highlight-overlay') ||
         target.closest('.srs-grade-bar') ||
-        target.closest('.page-bookmark-btn')
+        target.closest('.page-bookmark-btn') ||
+        target.closest('.selection-tooltip')
       ) {
         return;
       }
@@ -364,6 +425,8 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
       setSelectedBoxIds(new Set());
       setRevealedBoxId(null);
       setFocusedBoxIndex(null);
+      setActivePopoverBoxId(null);
+      setSelectionTooltip(null);
     };
 
     parent.addEventListener('pointerdown', handlePointerDown);
@@ -379,9 +442,44 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
     };
   }, [viewport, fileHash, pageIndex, addBox]);
 
+  const handleCreateHighlight = () => {
+    if (!selectionTooltip) return;
+    const parent = containerRef.current?.parentElement;
+    if (!parent) return;
+    const parentRect = parent.getBoundingClientRect();
+
+    const localLeft = selectionTooltip.rect.left - parentRect.left;
+    const localTop = selectionTooltip.rect.top - parentRect.top;
+    const localRight = selectionTooltip.rect.right - parentRect.left;
+    const localBottom = selectionTooltip.rect.bottom - parentRect.top;
+
+    const p1 = viewport.convertToPdfPoint(localLeft, localTop);
+    const p2 = viewport.convertToPdfPoint(localRight, localBottom);
+
+    const newBoxId = crypto.randomUUID();
+    const newBox: Box = {
+      id: newBoxId,
+      document_id: fileHash,
+      page_index: pageIndex,
+      pdfRect: [p1[0], p1[1], p2[0], p2[1]],
+      is_deleted: false,
+      last_modified: Date.now(),
+      note: JSON.stringify({ text: '', type: 'highlight' }),
+    };
+
+    addBox(newBox);
+    setActivePopoverBoxId(newBoxId);
+    setSelectionTooltip(null);
+    window.getSelection()?.removeAllRanges();
+  };
+
 
   const handleBoxClick = (e: React.MouseEvent, boxId: string) => {
     e.stopPropagation();
+
+    const clickedBox = boxesRef.current.find(b => b.id === boxId);
+    if (!clickedBox) return;
+    const noteInfo = parseNote(clickedBox.note);
 
     if (drawMode) {
       // Selection logic for deletion
@@ -395,19 +493,25 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
         return next;
       });
       setRevealedBoxId(null);
+      setActivePopoverBoxId(null);
     } else {
-      // Clicking a box in review mode: always toggle reveal.
-      // If the box is in the current navigable list, also set focus for arrow-key navigation.
-      // If the box is filtered out (not in navigableBoxes), we allow revealing it but clear
-      // keyboard focus so arrows continue cycling through the filtered set.
-      const navIdx = navigableBoxes.findIndex(b => b.id === boxId);
-      if (navIdx >= 0) {
-        setFocusedBoxIndex(navIdx);
+      if (noteInfo.type === 'highlight') {
+        // Highlights: toggle note popover directly on click
+        setActivePopoverBoxId(prev => prev === boxId ? null : boxId);
       } else {
-        // Box is outside the current filter — reveal it but don't assign focus.
-        setFocusedBoxIndex(null);
+        // Occlusion boxes: normal click logic (reveal/unreveal)
+        const isRevealed = revealAll || revealedBoxId === boxId;
+        if (isRevealed) {
+          // Already revealed -> click toggles note popover
+          setActivePopoverBoxId(prev => prev === boxId ? null : boxId);
+        } else {
+          // Reveal it
+          setRevealedBoxId(boxId);
+          const navIdx = navigableBoxes.findIndex(b => b.id === boxId);
+          setFocusedBoxIndex(navIdx >= 0 ? navIdx : null);
+          setActivePopoverBoxId(null);
+        }
       }
-      setRevealedBoxId(prev => (prev === boxId ? null : boxId));
     }
   };
 
@@ -448,27 +552,38 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
         const w = Math.abs(rect[2] - rect[0]);
         const h = Math.abs(rect[3] - rect[1]);
 
+        const noteInfo = parseNote(box.note);
+        const isHighlight = noteInfo.type === 'highlight';
+
         const isRevealed = revealAll || revealedBoxId === box.id;
         const isSelected = selectedBoxIds.has(box.id);
         const isFocused = !drawMode && focusedBox?.id === box.id;
         const gradeColor = getGradeColor(box.id);
 
-        // Fill precedence: draw-selected (red) > revealed (transparent) > grade fill color.
-        // Border always mirrors the fill for a solid look; focused adds a blue glow.
+        // Fill precedence: draw-selected (red) > highlights (yellow translucent) > revealed (transparent) > grade fill color.
         const getFillColor = () => {
-          if (isRevealed) return 'transparent';          // Show PDF content underneath
           if (drawMode && isSelected) return '#ef4444';  // Red tint for deletion selection
+          if (isHighlight) {
+            return activePopoverBoxId === box.id ? 'rgba(234, 179, 8, 0.45)' : 'rgba(253, 224, 71, 0.3)';
+          }
+          if (isRevealed) return 'transparent';          // Show PDF content underneath
           return gradeColor;                             // Grade-derived fill (or black)
         };
 
         const getBorderColor = () => {
-          if (isRevealed) return '#22c55e';              // Green border when revealed
           if (drawMode && isSelected) return '#ef4444';  // Red border when selected
+          if (isHighlight) {
+            return activePopoverBoxId === box.id ? '#ca8a04' : 'rgba(234, 179, 8, 0.4)';
+          }
+          if (isRevealed) return '#22c55e';              // Green border when revealed
           return gradeColor;                             // Match fill color
         };
 
         const getBoxShadow = () => {
           if (drawMode && isSelected) return '0 0 0 3px rgba(239,68,68,0.35)';
+          if (isHighlight) {
+            return activePopoverBoxId === box.id ? '0 0 0 2px #eab308' : undefined;
+          }
           if (isFocused && !isRevealed) return `0 0 0 3px rgba(96, 165, 250, 0.5)`;
           return undefined;
         };
@@ -476,21 +591,96 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
         return (
           <div key={box.id} style={{ position: 'absolute', left: `${x}px`, top: `${y}px`, width: `${w}px`, height: `${h}px` }}>
             <div
-              className={`occlusion-box ${isRevealed ? 'revealed' : ''} ${isSelected ? 'selected' : ''} ${isFocused && !isRevealed ? 'focused' : ''}`}
+              className={`${isHighlight ? 'highlight-overlay' : 'occlusion-box'} ${isRevealed ? 'revealed' : ''} ${isSelected ? 'selected' : ''} ${isFocused && !isRevealed ? 'focused' : ''}`}
               onClick={(e) => handleBoxClick(e, box.id)}
               style={{
                 position: 'absolute',
                 inset: 0,
                 backgroundColor: getFillColor(),
                 borderRadius: '2px',
-                border: `2px solid ${getBorderColor()}`,
+                border: isHighlight ? `1px solid ${getBorderColor()}` : `2px solid ${getBorderColor()}`,
                 opacity: 1,
                 cursor: 'pointer',
                 pointerEvents: 'auto',
                 transition: 'background-color 0.2s ease, border-color 0.2s ease',
                 boxShadow: getBoxShadow(),
               }}
-            />
+            >
+              {/* Note indicator for occlusion boxes */}
+              {!isHighlight && noteInfo.text && (
+                <div className="occlusion-note-indicator" title={noteInfo.text}>
+                  📝
+                </div>
+              )}
+            </div>
+
+            {/* Note Popover overlay */}
+            {activePopoverBoxId === box.id && (
+              <div 
+                className="note-popover"
+                style={{
+                  position: 'absolute',
+                  left: `${w / 2}px`,
+                  top: `0px`,
+                  transform: 'translate(-50%, -100%)',
+                  marginBottom: '8px',
+                  zIndex: 1001,
+                  pointerEvents: 'auto',
+                }}
+                onClick={e => e.stopPropagation()}
+              >
+                <textarea
+                  className="note-textarea"
+                  placeholder="Type a note or comment..."
+                  defaultValue={noteInfo.text}
+                  autoFocus
+                  onKeyDown={e => {
+                    // Prevent key events from bubbling to global hotkeys
+                    e.stopPropagation();
+                  }}
+                  onBlur={(e) => {
+                    const newText = e.target.value.trim();
+                    const updatedNote = isHighlight 
+                      ? JSON.stringify({ text: newText, type: 'highlight' })
+                      : newText;
+                    updateBoxNote(box.id, updatedNote);
+                  }}
+                />
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', marginTop: '6px' }}>
+                  <button
+                    onClick={() => {
+                      deleteBox(box.id);
+                      setActivePopoverBoxId(null);
+                    }}
+                    style={{
+                      background: '#ef4444',
+                      border: 'none',
+                      color: 'white',
+                      fontSize: '0.75rem',
+                      padding: '4px 8px',
+                      borderRadius: '4px',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    🗑️ Delete
+                  </button>
+                  <button
+                    onClick={() => setActivePopoverBoxId(null)}
+                    style={{
+                      background: '#475569',
+                      border: 'none',
+                      color: 'white',
+                      fontSize: '0.75rem',
+                      padding: '4px 8px',
+                      borderRadius: '4px',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         );
       })}
@@ -654,6 +844,22 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
           <span style={{ color: '#64748b', fontSize: '0.8rem' }}>
             or <kbd className="nav-kbd">Del</kbd> · <kbd className="nav-kbd">Esc</kbd> to cancel
           </span>
+        </div>
+      )}
+
+      {/* Floating selection tooltip */}
+      {selectionTooltip && (
+        <div 
+          className="selection-tooltip"
+          style={{
+            left: `${selectionTooltip.x}px`,
+            top: `${selectionTooltip.y}px`
+          }}
+          onClick={e => e.stopPropagation()}
+        >
+          <button onClick={handleCreateHighlight}>
+            ✍️ Highlight & Note
+          </button>
         </div>
       )}
     </div>

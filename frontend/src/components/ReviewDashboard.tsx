@@ -39,6 +39,17 @@ function formatDueDate(dateStr: string | null): { label: string; color: string }
   return { label: `Due in ${diffDays}d`, color: '#22c55e' };
 }
 
+const parseNote = (noteStr?: string | null): { text: string; type: 'occlusion' | 'highlight' } => {
+  if (!noteStr) return { text: '', type: 'occlusion' };
+  try {
+    const parsed = JSON.parse(noteStr);
+    if (parsed && typeof parsed === 'object' && parsed.type === 'highlight') {
+      return { text: parsed.text || '', type: 'highlight' };
+    }
+  } catch (e) {}
+  return { text: noteStr, type: 'occlusion' };
+};
+
 export default function ReviewDashboard({ fileHash, onClose, onJumpToPage }: ReviewDashboardProps) {
   const [cards, setCards] = useState<DashboardCard[]>([]);
   const [loading, setLoading] = useState(true);
@@ -61,7 +72,10 @@ export default function ReviewDashboard({ fileHash, onClose, onJumpToPage }: Rev
   }, [fileHash]);
 
   const filtered = cards
-    .filter(c => !search || c.note?.toLowerCase().includes(search.toLowerCase()) || `Page ${c.page_index}`.includes(search))
+    .filter(c => {
+      const noteInfo = parseNote(c.note);
+      return !search || noteInfo.text.toLowerCase().includes(search.toLowerCase()) || `Page ${c.page_index}`.includes(search);
+    })
     .sort((a, b) => {
       if (sortBy === 'due') {
         if (!a.next_review_at && !b.next_review_at) return 0;
@@ -166,6 +180,9 @@ export default function ReviewDashboard({ fileHash, onClose, onJumpToPage }: Rev
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '16px' }}>
             {filtered.map(card => {
               const { label: dueLabel, color: dueColor } = formatDueDate(card.next_review_at);
+              const noteInfo = parseNote(card.note);
+              const isHighlight = noteInfo.type === 'highlight';
+
               return (
                 <div
                   key={card.id}
@@ -183,7 +200,18 @@ export default function ReviewDashboard({ fileHash, onClose, onJumpToPage }: Rev
                     <span style={{ color: '#94a3b8', fontSize: '0.82rem', fontWeight: 600, letterSpacing: '0.05em' }}>
                       PAGE {card.page_index}
                     </span>
-                    {card.last_grade && (
+                    {isHighlight && (
+                      <span style={{
+                        background: 'rgba(234, 179, 8, 0.2)',
+                        color: '#fbbf24',
+                        border: '1px solid rgba(234, 179, 8, 0.4)',
+                        borderRadius: '6px', padding: '2px 8px',
+                        fontSize: '0.78rem', fontWeight: 700, textTransform: 'uppercase',
+                      }}>
+                        Highlight
+                      </span>
+                    )}
+                    {!isHighlight && card.last_grade && (
                       <span style={{
                         background: GRADE_COLORS[card.last_grade] + '22',
                         color: GRADE_COLORS[card.last_grade],
@@ -194,31 +222,33 @@ export default function ReviewDashboard({ fileHash, onClose, onJumpToPage }: Rev
                         {card.last_grade}
                       </span>
                     )}
-                    {!card.last_grade && (
+                    {!isHighlight && !card.last_grade && (
                       <span style={{ color: '#475569', fontSize: '0.78rem' }}>New card</span>
                     )}
                   </div>
 
                   {/* Note */}
                   <div style={{
-                    color: card.note ? '#e2e8f0' : '#475569',
+                    color: noteInfo.text ? '#e2e8f0' : '#475569',
                     fontSize: '0.95rem', minHeight: '40px',
-                    fontStyle: card.note ? 'normal' : 'italic',
+                    fontStyle: noteInfo.text ? 'normal' : 'italic',
                   }}>
-                    {card.note || 'No note'}
+                    {noteInfo.text || 'No note'}
                   </div>
 
                   {/* Stats row */}
-                  <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-                    <StatPill label="Ease" value={card.ease_factor ? card.ease_factor.toFixed(2) : '—'} />
-                    <StatPill label="Interval" value={card.interval_days != null ? `${card.interval_days}d` : '—'} />
-                    <StatPill label="Reviews" value={String(card.review_count)} />
-                  </div>
+                  {!isHighlight && (
+                    <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                      <StatPill label="Ease" value={card.ease_factor ? card.ease_factor.toFixed(2) : '—'} />
+                      <StatPill label="Interval" value={card.interval_days != null ? `${card.interval_days}d` : '—'} />
+                      <StatPill label="Reviews" value={String(card.review_count)} />
+                    </div>
+                  )}
 
                   {/* Due date + jump button */}
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' }}>
                     <span style={{ color: dueColor, fontSize: '0.85rem', fontWeight: 600 }}>
-                      ⏰ {dueLabel}
+                      {!isHighlight && `⏰ ${dueLabel}`}
                     </span>
                     <button
                       onClick={() => { onJumpToPage(card.page_index); onClose(); }}

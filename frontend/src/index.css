@@ -709,3 +709,92 @@ body {
 .textLayer ::selection {
   background: rgba(99, 102, 241, 0.3) !important; /* Premium Indigo selection */
 }
+
+/* Selection Tooltip */
+.selection-tooltip {
+  position: absolute;
+  z-index: 1000;
+  background: rgba(30, 41, 59, 0.95);
+  border: 1px solid #475569;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(8px);
+  padding: 6px 12px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transform: translate(-50%, -100%); /* Center horizontally and lift above the selection */
+  margin-top: -8px; /* Extra gap */
+  animation: tooltipFadeIn 0.15s ease-out;
+}
+
+@keyframes tooltipFadeIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -90%) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -100%) scale(1);
+  }
+}
+
+.selection-tooltip button {
+  background: none;
+  border: none;
+  color: white;
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.selection-tooltip button:hover {
+  background: rgba(255, 255, 255, 0.15);
+  transform: scale(1.03);
+}
+
+/* Highlight boxes on PDF */
+.highlight-overlay {
+  background-color: rgba(253, 224, 71, 0.3); /* Translucent yellow highlight */
+  border-bottom: 2px solid rgba(234, 179, 8, 0.5); /* Highlight underline */
+  border-radius: 1px;
+  cursor: pointer;
+  width: 100%;
+  height: 100%;
+  transition: all 0.2s ease;
+}
+
+.highlight-overlay:hover {
+  background-color: rgba(253, 224, 71, 0.55);
+  box-shadow: 0 0 4px rgba(234, 179, 8, 0.6);
+}
+
+.highlight-overlay.active {
+  background-color: rgba(253, 224, 71, 0.6);
+  box-shadow: 0 0 6px rgba(234, 179, 8, 0.8);
+}
+
+/* Note Indicators */
+.occlusion-note-indicator {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  font-size: 0.65rem;
+  background: rgba(253, 224, 71, 0.95);
+  color: #1e293b;
+  border-radius: 50%;
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
+  font-weight: bold;
+}
