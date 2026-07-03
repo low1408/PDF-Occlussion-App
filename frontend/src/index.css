@@ -726,6 +726,7 @@ body {
   transform: translate(-50%, -100%); /* Center horizontally and lift above the selection */
   margin-top: -8px; /* Extra gap */
   animation: tooltipFadeIn 0.15s ease-out;
+  pointer-events: auto;
 }
 
 @keyframes tooltipFadeIn {
