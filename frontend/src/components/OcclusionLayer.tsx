@@ -619,11 +619,6 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
               <div 
                 className="note-popover"
                 style={{
-                  position: 'absolute',
-                  left: `${w / 2}px`,
-                  top: `0px`,
-                  transform: 'translate(-50%, -100%)',
-                  marginBottom: '8px',
                   zIndex: 1001,
                   pointerEvents: 'auto',
                 }}
