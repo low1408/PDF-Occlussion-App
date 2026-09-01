@@ -28,6 +28,7 @@ export default function PdfViewer({ fileData, fileHash, initialPage, onSync }: P
 
   const [outline, setOutline] = useState<any[]>([]);
   const [activeTab, setActiveTab] = useState<'chapters' | 'bookmarks'>('chapters');
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
   const bookmarks = useOcclusionStore(state => state.bookmarks);
 
   const undo = useOcclusionStore(state => state.undo);
@@ -259,6 +260,14 @@ export default function PdfViewer({ fileData, fileHash, initialPage, onSync }: P
       )}
       <div className="toolbar">
         <div className="toolbar-title">PDF Occlusion Engine ({numPages} pages)</div>
+        <button
+          className={`mode-btn ${isSidebarCollapsed ? '' : 'active'}`}
+          onClick={() => setIsSidebarCollapsed(prev => !prev)}
+          aria-expanded={!isSidebarCollapsed}
+          aria-controls="document-outline"
+        >
+          {isSidebarCollapsed ? '☰ Outline' : '← Hide outline'}
+        </button>
         <div className="mode-controls">
           <button
             className={`mode-btn ${drawMode ? 'active' : ''}`}
@@ -349,34 +358,39 @@ export default function PdfViewer({ fileData, fileHash, initialPage, onSync }: P
         </div>
       )}
       <div className="pdf-layout">
-        <div className="sidebar">
-          <div className="sidebar-tabs">
-            <button
-              className={`sidebar-tab ${activeTab === 'chapters' ? 'active' : ''}`}
-              onClick={() => setActiveTab('chapters')}
-            >
-              Chapters
-            </button>
-            <button
-              className={`sidebar-tab ${activeTab === 'bookmarks' ? 'active' : ''}`}
-              onClick={() => setActiveTab('bookmarks')}
-            >
-              Bookmarks
-            </button>
+        {!isSidebarCollapsed && (
+          <div id="document-outline" className="sidebar">
+            <div className="sidebar-header">
+              <div className="sidebar-title">Document outline</div>
+            </div>
+            <div className="sidebar-tabs">
+              <button
+                className={`sidebar-tab ${activeTab === 'chapters' ? 'active' : ''}`}
+                onClick={() => setActiveTab('chapters')}
+              >
+                Chapters
+              </button>
+              <button
+                className={`sidebar-tab ${activeTab === 'bookmarks' ? 'active' : ''}`}
+                onClick={() => setActiveTab('bookmarks')}
+              >
+                Bookmarks
+              </button>
+            </div>
+            <div className="sidebar-content">
+              {activeTab === 'chapters' && (
+                outline.length > 0 ? renderOutline(outline) : <div className="sidebar-empty">No chapters found</div>
+              )}
+              {activeTab === 'bookmarks' && (
+                bookmarks.length > 0 ? bookmarks.map(b => (
+                  <div key={b.id} className="bookmark-item" onClick={() => scrollToPage(null, b.page_index)}>
+                    ⭐ {b.title}
+                  </div>
+                )) : <div className="sidebar-empty">No bookmarks added</div>
+              )}
+            </div>
           </div>
-          <div className="sidebar-content">
-            {activeTab === 'chapters' && (
-              outline.length > 0 ? renderOutline(outline) : <div style={{ color: '#64748b', textAlign: 'center', marginTop: '20px' }}>No chapters found</div>
-            )}
-            {activeTab === 'bookmarks' && (
-              bookmarks.length > 0 ? bookmarks.map(b => (
-                <div key={b.id} className="bookmark-item" onClick={() => scrollToPage(null, b.page_index)}>
-                  ⭐ {b.title}
-                </div>
-              )) : <div style={{ color: '#64748b', textAlign: 'center', marginTop: '20px' }}>No bookmarks added</div>
-            )}
-          </div>
-        </div>
+        )}
         <div className="pdf-pages-container" ref={containerRef}>
           {Array.from({ length: numPages }).map((_, i) => (
             <PdfPage

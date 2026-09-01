@@ -239,10 +239,13 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
     };
 
     const handlePointerDown = (e: PointerEvent) => {
-      // Clear selection tooltip
+      const target = e.target as HTMLElement;
+      // The tooltip button must survive pointerdown so its click handler can run.
+      if (target.closest('.selection-tooltip')) return;
+
+      // Clear selection tooltip when interacting elsewhere on the page.
       setSelectionTooltip(null);
 
-      const target = e.target as HTMLElement;
       // If clicking inside the active note popover, let the popover handle it (don't start drag, don't clear popover)
       if (target.closest('.note-popover')) return;
 

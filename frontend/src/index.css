@@ -518,9 +518,10 @@ body {
 }
 
 .sidebar {
-  width: 250px;
-  background-color: white;
-  border-right: 1px solid #e2e8f0;
+  width: 280px;
+  background-color: #ffffff;
+  border-right: 1px solid #cbd5e1;
+  color: #0f172a;
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
@@ -528,17 +529,43 @@ body {
 }
 
 .dark-mode .sidebar {
-  background-color: #1a1a2e;
-  border-right-color: #334155;
+  background-color: #ffffff;
+  border-right-color: #cbd5e1;
+  color: #0f172a;
+}
+
+.sidebar-header {
+  min-height: 44px;
+  padding: 0 10px 0 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: #ffffff;
+  border-bottom: 1px solid #cbd5e1;
+}
+
+.dark-mode .sidebar-header {
+  background: #ffffff;
+  border-bottom-color: #cbd5e1;
+}
+
+.sidebar-title {
+  color: #0f172a;
+  font-size: 0.82rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .sidebar-tabs {
   display: flex;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid #cbd5e1;
 }
 
 .dark-mode .sidebar-tabs {
-  border-bottom-color: #334155;
+  border-bottom-color: #cbd5e1;
 }
 
 .sidebar-tab {
@@ -546,35 +573,40 @@ body {
   padding: 10px;
   text-align: center;
   font-size: 0.9rem;
-  font-weight: 500;
+  font-weight: 700;
   cursor: pointer;
-  background: #f8fafc;
+  background: #f1f5f9;
   border: none;
-  color: #64748b;
-  border-bottom: 2px solid transparent;
+  color: #334155;
+  border-bottom: 3px solid transparent;
 }
 
 .dark-mode .sidebar-tab {
-  background: #111827;
-  color: #94a3b8;
+  background: #f1f5f9;
+  color: #334155;
 }
 
 .sidebar-tab.active {
-  color: #4f46e5;
-  border-bottom-color: #4f46e5;
-  background: white;
+  color: #0f172a;
+  border-bottom-color: #2563eb;
+  background: #ffffff;
 }
 
 .dark-mode .sidebar-tab.active {
-  background: #1a1a2e;
-  color: #818cf8;
-  border-bottom-color: #818cf8;
+  background: #ffffff;
+  color: #0f172a;
+  border-bottom-color: #2563eb;
 }
 
 .sidebar-content {
   flex: 1;
   overflow-y: auto;
   padding: 10px;
+  background: #ffffff;
+}
+
+.dark-mode .sidebar-content {
+  background: #ffffff;
 }
 
 .toc-item,
@@ -589,16 +621,28 @@ body {
   text-overflow: ellipsis;
   overflow: hidden;
   white-space: nowrap;
+  color: #0f172a;
+  font-weight: 600;
+  text-align: left;
 }
 
 .toc-item:hover,
 .bookmark-item:hover {
-  background: #f1f5f9;
+  background: #dbeafe;
+  color: #0b1220;
 }
 
 .dark-mode .toc-item:hover,
 .dark-mode .bookmark-item:hover {
-  background: #334155;
+  background: #dbeafe;
+  color: #0b1220;
+}
+
+.sidebar-empty {
+  color: #334155;
+  text-align: center;
+  margin-top: 20px;
+  font-weight: 600;
 }
 
 /* Note Popover */
@@ -609,13 +653,14 @@ body {
   transform: translateX(-50%);
   background: white;
   border-radius: 6px;
-  padding: 8px;
+  padding: 12px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
   z-index: 50;
-  width: 200px;
+  width: 380px;
+  max-width: calc(100vw - 32px);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
   border: 1px solid #e2e8f0;
 }
 
@@ -628,12 +673,13 @@ body {
   width: 100%;
   box-sizing: border-box;
   resize: vertical;
-  min-height: 60px;
+  min-height: 160px;
   border: 1px solid #cbd5e1;
   border-radius: 4px;
-  padding: 6px;
+  padding: 10px;
   font-family: inherit;
-  font-size: 0.85rem;
+  font-size: 0.95rem;
+  line-height: 1.45;
 }
 
 .dark-mode .note-textarea {
