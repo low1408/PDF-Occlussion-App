@@ -5,7 +5,7 @@ A PDF occlusion study app with a React + Vite frontend and an Express + PostgreS
 ## Features
 - Create and sync PDF occlusions per document
 - Bookmark pages
-- Spaced repetition (SM‑2) review scheduling
+- Spaced repetition (SM‑2) review scheduling with Anki-style grades: Impossible is a lapse (due again now); Hard, OK and Easy all pass, with Hard growing the interval least (×1.2) and lowering the ease factor, OK keeping it and Easy raising it
 - Local/offline‑friendly sync primitives
 
 ## Tech Stack

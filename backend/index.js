@@ -54,10 +54,17 @@ function validateItems(items, schema) {
 }
 
 // ---------------------------------------------------------------------------
-// SM-2 Spaced Repetition Algorithm
+// SM-2 Spaced Repetition Algorithm, with Anki-style grades: Impossible is a
+// lapse; Hard, OK and Easy all pass. Mirrors frontend/src/srs.ts, which is
+// what normally schedules cards (the client sends its result); this runs only
+// when a review arrives without card state.
 // ---------------------------------------------------------------------------
 
-const GRADE_MAP = { easy: 5, ok: 3, hard: 1, impossible: 0 };
+// SM-2 quality (0–5) per grade: Hard lowers the ease factor, OK keeps it, Easy raises it.
+const GRADE_MAP = { easy: 5, ok: 4, hard: 3, impossible: 0 };
+
+// Hard passes but grows the interval far less than OK's ease-factor multiplier.
+const HARD_INTERVAL_FACTOR = 1.2;
 
 /**
  * Compute the next SRS card state given a grade.
@@ -71,26 +78,19 @@ function computeSrs(card, grade) {
   const q = GRADE_MAP[grade];
   if (q === undefined) throw new Error(`Invalid grade: ${grade}`);
 
-  let { ease_factor: ef, interval_days: interval, repetitions: reps } = card;
+  // EF' = EF + (0.1 - (5-q) * (0.08 + (5-q) * 0.02)), floored at 1.3
+  const ef = Math.max(1.3, card.ease_factor + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02)));
 
-  // Update ease factor: EF' = EF + (0.1 - (5-q) * (0.08 + (5-q) * 0.02))
-  ef = ef + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02));
-  if (ef < 1.3) ef = 1.3; // floor
+  // OK and Easy always land at least a day past Hard; at low ease, interval × ease can round down to it.
+  const hardInterval = Math.max(card.interval_days + 1, Math.round(card.interval_days * HARD_INTERVAL_FACTOR));
 
-  if (q < 3) {
-    // Failed recall — reset
-    reps = 0;
-    interval = 0;
-  } else {
-    // Successful recall
-    reps += 1;
-    if (reps === 1) {
-      interval = 1;
-    } else if (reps === 2) {
-      interval = 6;
-    } else {
-      interval = Math.round(interval * ef);
-    }
+  let reps = 0;
+  let interval = 0; // lapse: due again straight away
+  if (grade !== 'impossible') {
+    reps = card.repetitions + 1;
+    if (reps === 1) interval = 1;
+    else if (grade === 'hard') interval = hardInterval;
+    else interval = Math.max(hardInterval + 1, reps === 2 ? 6 : Math.round(card.interval_days * ef));
   }
 
   const nextReview = new Date();

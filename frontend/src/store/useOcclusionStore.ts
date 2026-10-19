@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { openDB, DBSchema, IDBPDatabase } from 'idb';
+import { computeSrs, NEW_CARD, SrsGrade } from '../srs';
 
 export interface Box {
   id: string;
@@ -47,7 +48,7 @@ export type ReviewFilter =
   | 'hard'
   | 'impossible';
 
-export type SrsGrade = 'easy' | 'ok' | 'hard' | 'impossible';
+export type { SrsGrade };
 
 /** A graded review queued in IndexedDB until the backend has logged it. */
 export interface PendingReview {
@@ -70,38 +71,6 @@ export interface RemoteSnapshot {
   boxes: Box[];
   bookmarks: Bookmark[];
   srsCards: SrsCard[];
-}
-
-const GRADE_MAP: Record<SrsGrade, number> = { easy: 5, ok: 3, hard: 1, impossible: 0 };
-
-function computeSrs(card: Pick<SrsCard, 'ease_factor' | 'interval_days' | 'repetitions'>, grade: SrsGrade) {
-  const q = GRADE_MAP[grade];
-  let ef = card.ease_factor;
-  let interval = card.interval_days;
-  let reps = card.repetitions;
-
-  ef = ef + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02));
-  if (ef < 1.3) ef = 1.3;
-
-  if (q < 3) {
-    reps = 0;
-    interval = 0;
-  } else {
-    reps += 1;
-    if (reps === 1) interval = 1;
-    else if (reps === 2) interval = 6;
-    else interval = Math.round(interval * ef);
-  }
-
-  const nextReview = new Date();
-  nextReview.setDate(nextReview.getDate() + interval);
-
-  return {
-    ease_factor: Math.round(ef * 100) / 100,
-    interval_days: interval,
-    repetitions: reps,
-    next_review_at: nextReview.toISOString(),
-  };
 }
 
 export interface HistoryPatch {
@@ -392,13 +361,7 @@ export const useOcclusionStore = create<State>((set, get) => ({
   recordGrade: (occlusionId: string, documentId: string, grade: SrsGrade) => {
     const { srsCards } = get();
     const existing = srsCards.find(c => c.occlusion_id === occlusionId);
-    const currentCard = existing || {
-      ease_factor: 2.5,
-      interval_days: 0,
-      repetitions: 0,
-    };
-
-    const newState = computeSrs(currentCard, grade);
+    const newState = computeSrs(existing ?? NEW_CARD, grade);
     const now = Date.now();
 
     const updatedCard: SrsCard = {
