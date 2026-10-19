@@ -170,7 +170,7 @@ export default function PdfPage({ pageIndex, pdfDocument, scale, fileHash, drawM
       }}
     >
       <button 
-        className="page-bookmark-btn" 
+        className={`page-bookmark-btn ${isBookmarked ? 'on' : ''}`}
         onClick={() => toggleBookmark(fileHash, pageIndex)}
         title={isBookmarked ? "Remove Bookmark" : "Add Bookmark"}
       >

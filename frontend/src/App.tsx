@@ -6,6 +6,8 @@ import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.mjs?url';
 import { useOcclusionStore, RecentPdfEntry } from './store/useOcclusionStore';
 import { loadRecents, saveRecent, loadPdfData, deleteRecent, RecentPdfMeta } from './store/useRecentPdfs';
 import PdfViewer from './components/PdfViewer';
+import Icon from './components/Icon';
+import { useTheme } from './theme';
 import { pullFromServer, startAutoSync } from './sync';
 import './index.css';
 
@@ -34,9 +36,11 @@ function formatFileSize(bytes: number): string {
 function App() {
   const [fileData, setFileData] = useState<ArrayBuffer | null>(null);
   const [fileHash, setFileHash] = useState<string>('');
+  const [fileName, setFileName] = useState<string>('');
   const [initialPage, setInitialPage] = useState<number | undefined>(undefined);
   const [recents, setRecents] = useState<RecentPdfMeta[]>([]);
   const [loadingRecent, setLoadingRecent] = useState<string | null>(null);
+  const [theme, toggleTheme] = useTheme();
   const loadBoxesForDocument = useOcclusionStore(state => state.loadBoxesForDocument);
 
   useEffect(() => {
@@ -69,6 +73,7 @@ function App() {
     // Open the PDF immediately — don't block on caching
     setFileData(buffer);
     setFileHash(hashHex);
+    setFileName(file.name);
     setInitialPage(known?.lastViewedPage);
 
     // Cache in IDB in the background (best-effort).
@@ -106,12 +111,20 @@ function App() {
       }
       setFileData(data);
       setFileHash(meta.fileHash);
+      setFileName(meta.fileName);
       setInitialPage(meta.lastViewedPage);
     } catch (err) {
       console.error('Failed to load recent PDF:', err);
       alert('Failed to load PDF from cache.');
     }
     setLoadingRecent(null);
+  };
+
+  const handleCloseDocument = () => {
+    setFileData(null);
+    setFileHash('');
+    setInitialPage(undefined);
+    loadRecents().then(setRecents).catch(console.error);
   };
 
   const handleDeleteRecent = async (e: React.MouseEvent, fileHash: string) => {
@@ -124,11 +137,21 @@ function App() {
     <div className="app-container">
       {!fileData ? (
         <div className="upload-container">
+          <button
+            className="tb-btn landing-theme"
+            onClick={toggleTheme}
+            aria-label={theme === 'dark' ? 'Light mode' : 'Dark mode'}
+            title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+          >
+            <Icon name={theme === 'dark' ? 'sun' : 'moon'} />
+          </button>
           <div className="landing-header">
-            <h1>📖 PDF Occlusion Engine</h1>
-            <p>Select a PDF to begin studying</p>
+            <div className="landing-logo"><Icon name="book" size={28} /></div>
+            <h1>PDF Occlusion Engine</h1>
+            <p>Hide parts of any PDF, then quiz yourself with spaced repetition.</p>
             <label className="file-picker-btn" id="file-picker">
-              <span>📂 Choose PDF</span>
+              <Icon name="upload" size={18} />
+              <span>Choose PDF</span>
               <input type="file" accept="application/pdf" onChange={handleFileChange} />
             </label>
           </div>
@@ -156,7 +179,7 @@ function App() {
                       }
                     }}
                   >
-                    <div className="recent-icon">📄</div>
+                    <div className="recent-icon"><Icon name="file" size={20} /></div>
                     <div className="recent-info">
                       <div className="recent-name">{r.fileName}</div>
                       <div className="recent-meta">
@@ -173,8 +196,9 @@ function App() {
                       className="recent-delete"
                       onClick={(e) => handleDeleteRecent(e, r.fileHash)}
                       title="Remove from recent"
+                      aria-label={`Remove ${r.fileName} from recent`}
                     >
-                      ✕
+                      <Icon name="x" />
                     </button>
                     {loadingRecent === r.fileHash && (
                       <div className="recent-loading">Loading…</div>
@@ -186,7 +210,14 @@ function App() {
           )}
         </div>
       ) : (
-        <PdfViewer key={fileHash} fileData={fileData} fileHash={fileHash} initialPage={initialPage} />
+        <PdfViewer
+          key={fileHash}
+          fileData={fileData}
+          fileHash={fileHash}
+          fileName={fileName}
+          initialPage={initialPage}
+          onClose={handleCloseDocument}
+        />
       )}
     </div>
   );

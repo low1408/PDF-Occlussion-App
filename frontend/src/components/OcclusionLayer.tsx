@@ -1,15 +1,24 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import type * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { useOcclusionStore, Box, SrsGrade, SrsCard, ReviewFilter } from '../store/useOcclusionStore';
+import { computeSrs, formatInterval, NEW_CARD } from '../srs';
+import Icon from './Icon';
 
-// Fill color for each grade (the mask is fully painted with this color).
+// Mask fill per last grade; the colours are theme tokens in index.css.
 const GRADE_COLORS: Record<SrsGrade, string> = {
-  easy:       '#10b981', // emerald
-  ok:         '#06b6d4', // cyan
-  hard:       '#f97316', // orange
-  impossible: '#ef4444', // red
+  easy: 'var(--grade-easy)',
+  ok: 'var(--grade-ok)',
+  hard: 'var(--grade-hard)',
+  impossible: 'var(--grade-impossible)',
 };
-const DEFAULT_FILL = '#000000'; // black — no grade yet
+const DEFAULT_FILL = 'var(--mask-ungraded)'; // no grade yet
+
+const GRADE_BUTTONS: { grade: SrsGrade; key: string; label: string }[] = [
+  { grade: 'easy', key: '1', label: 'Easy' },
+  { grade: 'ok', key: '2', label: 'OK' },
+  { grade: 'hard', key: '3', label: 'Hard' },
+  { grade: 'impossible', key: '4', label: 'Impossible' },
+];
 
 interface OcclusionLayerProps {
   viewport: pdfjsLib.PageViewport;
@@ -561,6 +570,13 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
     !revealedBoxId &&
     selectedBoxIds.size === 0;
 
+  // Next interval each grade would give the revealed mask, shown on its button.
+  const revealedCard = revealedBoxId ? getSrsCard(revealedBoxId) : undefined;
+  const nextIntervalLabel = (grade: SrsGrade) => {
+    const days = computeSrs(revealedCard ?? NEW_CARD, grade).interval_days;
+    return days === 0 ? 'again now' : `next in ${formatInterval(days)}`;
+  };
+
   return (
     <div
       ref={containerRef}
@@ -587,72 +603,32 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
         const isRevealed = revealAll || revealedBoxId === box.id;
         const isSelected = selectedBoxIds.has(box.id);
         const isFocused = !drawMode && focusedBox?.id === box.id;
-        const gradeColor = getGradeColor(box.id);
+        const isPopoverOpen = activePopoverBoxId === box.id;
 
-        // Fill precedence: draw-selected (red) > highlights (yellow translucent) > revealed (transparent) > grade fill color.
-        const getFillColor = () => {
-          if (drawMode && isSelected) return '#ef4444';  // Red tint for deletion selection
-          if (isHighlight) {
-            return activePopoverBoxId === box.id ? 'rgba(234, 179, 8, 0.45)' : 'rgba(253, 224, 71, 0.3)';
-          }
-          if (isRevealed) return 'transparent';          // Show PDF content underneath
-          return gradeColor;                             // Grade-derived fill (or black)
-        };
-
-        const getBorderColor = () => {
-          if (drawMode && isSelected) return '#ef4444';  // Red border when selected
-          if (isHighlight) {
-            return activePopoverBoxId === box.id ? '#ca8a04' : 'rgba(234, 179, 8, 0.4)';
-          }
-          if (isRevealed) return '#22c55e';              // Green border when revealed
-          return gradeColor;                             // Match fill color
-        };
-
-        const getBoxShadow = () => {
-          if (drawMode && isSelected) return '0 0 0 3px rgba(239,68,68,0.35)';
-          if (isHighlight) {
-            return activePopoverBoxId === box.id ? '0 0 0 2px #eab308' : undefined;
-          }
-          if (isFocused && !isRevealed) return `0 0 0 3px rgba(96, 165, 250, 0.5)`;
-          return undefined;
-        };
+        // Looks live in index.css: fill from --mask-color, dashed outline when revealed,
+        // pulsing ring when focused, accent stripes when selected in draw mode.
+        const className = isHighlight
+          ? `highlight-overlay ${isPopoverOpen ? 'active' : ''} ${isSelected ? 'selected' : ''}`
+          : `occlusion-box ${isRevealed ? 'revealed' : ''} ${isSelected ? 'selected' : ''} ${isFocused && !isRevealed ? 'focused' : ''}`;
 
         return (
           <div key={box.id} data-box-id={box.id} style={{ position: 'absolute', left: `${x}px`, top: `${y}px`, width: `${w}px`, height: `${h}px` }}>
             <div
-              className={`${isHighlight ? 'highlight-overlay' : 'occlusion-box'} ${isRevealed ? 'revealed' : ''} ${isSelected ? 'selected' : ''} ${isFocused && !isRevealed ? 'focused' : ''}`}
+              className={className}
               onClick={(e) => handleBoxClick(e, box.id)}
-              style={{
-                position: 'absolute',
-                inset: 0,
-                backgroundColor: getFillColor(),
-                borderRadius: '2px',
-                border: isHighlight ? `1px solid ${getBorderColor()}` : `2px solid ${getBorderColor()}`,
-                opacity: 1,
-                cursor: 'pointer',
-                pointerEvents: 'auto',
-                transition: 'background-color 0.2s ease, border-color 0.2s ease',
-                boxShadow: getBoxShadow(),
-              }}
+              style={isHighlight ? undefined : { ['--mask-color' as string]: getGradeColor(box.id) }}
             >
               {/* Note indicator for occlusion boxes */}
               {!isHighlight && noteInfo.text && (
                 <div className="occlusion-note-indicator" title={noteInfo.text}>
-                  📝
+                  ✎
                 </div>
               )}
             </div>
 
             {/* Note Popover overlay */}
-            {activePopoverBoxId === box.id && (
-              <div 
-                className="note-popover"
-                style={{
-                  zIndex: 1001,
-                  pointerEvents: 'auto',
-                }}
-                onClick={e => e.stopPropagation()}
-              >
+            {isPopoverOpen && (
+              <div className="note-popover" onClick={e => e.stopPropagation()}>
                 <textarea
                   className="note-textarea"
                   placeholder="Type a note or comment..."
@@ -664,42 +640,24 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
                   }}
                   onBlur={(e) => {
                     const newText = e.target.value.trim();
-                    const updatedNote = isHighlight 
+                    const updatedNote = isHighlight
                       ? JSON.stringify({ text: newText, type: 'highlight' })
                       : newText;
                     updateBoxNote(box.id, updatedNote);
                   }}
                 />
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', marginTop: '6px' }}>
+                <div className="note-actions">
                   <button
+                    className="btn btn-sm btn-danger"
                     onClick={() => {
                       deleteBox(box.id);
                       setActivePopoverBoxId(null);
                     }}
-                    style={{
-                      background: '#ef4444',
-                      border: 'none',
-                      color: 'white',
-                      fontSize: '0.75rem',
-                      padding: '4px 8px',
-                      borderRadius: '4px',
-                      cursor: 'pointer'
-                    }}
                   >
-                    🗑️ Delete
+                    <Icon name="trash" size={14} />
+                    Delete
                   </button>
-                  <button
-                    onClick={() => setActivePopoverBoxId(null)}
-                    style={{
-                      background: '#475569',
-                      border: 'none',
-                      color: 'white',
-                      fontSize: '0.75rem',
-                      padding: '4px 8px',
-                      borderRadius: '4px',
-                      cursor: 'pointer'
-                    }}
-                  >
+                  <button className="btn btn-sm" onClick={() => setActivePopoverBoxId(null)}>
                     Close
                   </button>
                 </div>
@@ -714,166 +672,81 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
           position: 'absolute',
           left: `${tempBox.x}px`, top: `${tempBox.y}px`,
           width: `${tempBox.w}px`, height: `${tempBox.h}px`,
-          backgroundColor: isLassoing ? 'rgba(59, 130, 246, 0.2)' : 'rgba(17, 24, 39, 0.7)',
-          border: `2px dashed ${isLassoing ? '#3b82f6' : '#fbbf24'}`
+          borderRadius: '3px',
+          backgroundColor: isLassoing ? 'var(--accent-soft)' : 'color-mix(in srgb, var(--mask-ungraded) 55%, transparent)',
+          border: '2px dashed var(--accent)',
         }} />
       )}
 
-      {/* Grade bar — shown when a box is revealed (click or Space) */}
+      {/* Grade panel — shown when a box is revealed (click or Space) */}
       {revealedBoxId && !drawMode && (
-        <div className="srs-grade-bar" style={{
-          position: 'fixed',
-          bottom: 0,
-          left: 0,
-          right: 0,
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'stretch',
-          gap: '12px',
-          zIndex: 9999,
-          pointerEvents: 'auto',
-          backgroundColor: '#1f2937',
-          padding: '16px 24px',
-          boxShadow: '0 -4px 12px rgba(0, 0, 0, 0.2)'
-        }}>
-          {/* Navigation hint */}
-          <div style={{
-            position: 'absolute',
-            top: '8px',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            fontSize: '0.72rem',
-            color: '#64748b',
-            whiteSpace: 'nowrap',
-            letterSpacing: '0.04em',
-          }}>
-            ← → navigate &nbsp;·&nbsp; Space reveal &nbsp;·&nbsp; 1 Easy &nbsp; 2 OK &nbsp; 3 Hard &nbsp; 4 Impossible
+        <div className="review-dock">
+          <div className="srs-grade-bar">
+            <div className="srs-grade-hint">
+              How well did you remember it? &nbsp;<kbd>1</kbd>–<kbd>4</kbd> to grade · <kbd>←</kbd> <kbd>→</kbd> to move on
+            </div>
+            <div className="srs-grade-buttons">
+              {GRADE_BUTTONS.map(({ grade, key, label }) => (
+                <button
+                  key={grade}
+                  className={`srs-btn srs-${grade}`}
+                  onClick={() => handleGrade(grade)}
+                  title={`${label} (${key}): ${nextIntervalLabel(grade)}`}
+                >
+                  <span className="srs-key">{key}</span>
+                  <span className="srs-label">{label}</span>
+                  <span className="srs-interval">{nextIntervalLabel(grade)}</span>
+                </button>
+              ))}
+            </div>
           </div>
-          <button className="srs-btn srs-easy"   onClick={() => handleGrade('easy')}>
-            <span className="srs-key">1</span> Easy
-          </button>
-          <button className="srs-btn srs-ok"     onClick={() => handleGrade('ok')}>
-            <span className="srs-key">2</span> OK
-          </button>
-          <button className="srs-btn srs-hard"   onClick={() => handleGrade('hard')}>
-            <span className="srs-key">3</span> Hard
-          </button>
-          <button className="srs-btn srs-impossible" onClick={() => handleGrade('impossible')}>
-            <span className="srs-key">4</span> Impossible
-          </button>
         </div>
       )}
 
       {/* Navigation hint when focused but not yet revealed, and nothing selected */}
       {focusedBox && !revealedBoxId && !drawMode && selectedBoxIds.size === 0 && (
-        <div style={{
-          position: 'fixed',
-          bottom: 0,
-          left: 0,
-          right: 0,
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          gap: '16px',
-          zIndex: 9999,
-          pointerEvents: 'none',
-          backgroundColor: 'rgba(31, 41, 55, 0.92)',
-          padding: '10px 24px',
-          fontSize: '0.8rem',
-          color: '#94a3b8',
-          letterSpacing: '0.04em',
-        }}>
-          <span>
-            <kbd className="nav-kbd">←</kbd><kbd className="nav-kbd">→</kbd> navigate
-          </span>
-          <span>·</span>
-          <span><kbd className="nav-kbd">Space</kbd> reveal</span>
-          <span>·</span>
-          <span style={{ color: '#60a5fa' }}>
-            {(focusedBoxIndex ?? 0) + 1} / {navigableBoxes.length}
-            {reviewFilter !== 'all' && (
-              <span style={{ color: '#94a3b8', marginLeft: '6px' }}>
-                (filtered from {sortedBoxes.length})
-              </span>
-            )}
-          </span>
+        <div className="review-dock">
+          <div className="hint-pill">
+            <span><kbd>←</kbd> <kbd>→</kbd> move</span>
+            <span className="sep">·</span>
+            <span><kbd>Space</kbd> reveal</span>
+            <span className="sep">·</span>
+            <span className="count">{(focusedBoxIndex ?? 0) + 1} / {navigableBoxes.length}</span>
+            {reviewFilter !== 'all' && <span>filtered from {sortedBoxes.length}</span>}
+          </div>
         </div>
       )}
 
       {/* Hint when a filter is active but no masks match on this page */}
       {shouldShowFilterEmptyHint && (
-        <div style={{
-          position: 'fixed',
-          bottom: 0,
-          left: 0,
-          right: 0,
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          zIndex: 9999,
-          pointerEvents: 'none',
-          backgroundColor: 'rgba(31, 41, 55, 0.92)',
-          padding: '10px 24px',
-          fontSize: '0.8rem',
-          color: '#64748b',
-          letterSpacing: '0.04em',
-        }}>
-          0 masks match the current filter on this page
+        <div className="review-dock">
+          <div className="hint-pill">No masks on this page match the filter</div>
         </div>
       )}
 
       {/* Delete-selection bar — shown when masks are lasso-selected in review mode */}
       {!drawMode && selectedBoxIds.size > 0 && !revealedBoxId && (
-        <div style={{
-          position: 'fixed',
-          bottom: 0,
-          left: 0,
-          right: 0,
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          gap: '16px',
-          zIndex: 9999,
-          pointerEvents: 'auto',
-          backgroundColor: '#1f2937',
-          borderTop: '2px solid #ef4444',
-          padding: '14px 24px',
-          boxShadow: '0 -4px 12px rgba(0,0,0,0.25)',
-          animation: 'fadeInUp 0.15s ease-out',
-        }}>
-          <span style={{ color: '#f87171', fontWeight: 600, fontSize: '0.95rem' }}>
-            {selectedBoxIds.size} mask{selectedBoxIds.size !== 1 ? 's' : ''} selected
-          </span>
-          <button
-            onClick={() => {
-              selectedBoxIds.forEach(id => deleteBox(id));
-              setSelectedBoxIds(new Set());
-            }}
-            style={{
-              background: '#ef4444',
-              border: 'none',
-              color: 'white',
-              padding: '8px 20px',
-              borderRadius: '6px',
-              cursor: 'pointer',
-              fontWeight: 600,
-              fontSize: '0.9rem',
-              transition: 'filter 0.15s',
-            }}
-            onMouseEnter={e => (e.currentTarget.style.filter = 'brightness(1.15)')}
-            onMouseLeave={e => (e.currentTarget.style.filter = '')}
-          >
-            🗑️ Delete
-          </button>
-          <span style={{ color: '#64748b', fontSize: '0.8rem' }}>
-            or <kbd className="nav-kbd">Del</kbd> · <kbd className="nav-kbd">Esc</kbd> to cancel
-          </span>
+        <div className="review-dock">
+          <div className="hint-pill danger">
+            <strong>{selectedBoxIds.size} mask{selectedBoxIds.size !== 1 ? 's' : ''} selected</strong>
+            <span><kbd>Esc</kbd> to cancel</span>
+            <button
+              className="btn btn-sm btn-danger"
+              onClick={() => {
+                selectedBoxIds.forEach(id => deleteBox(id));
+                setSelectedBoxIds(new Set());
+              }}
+            >
+              <Icon name="trash" size={14} />
+              Delete
+            </button>
+          </div>
         </div>
       )}
 
       {/* Floating selection tooltip */}
       {selectionTooltip && (
-        <div 
+        <div
           className="selection-tooltip"
           style={{
             left: `${selectionTooltip.x}px`,
@@ -882,7 +755,8 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
           onClick={e => e.stopPropagation()}
         >
           <button onClick={handleCreateHighlight}>
-            ✍️ Highlight & Note
+            <Icon name="pencil" size={14} />
+            Highlight &amp; note
           </button>
         </div>
       )}

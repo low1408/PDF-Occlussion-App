@@ -4,6 +4,8 @@ import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.mjs?url';
 import { useOcclusionStore, ReviewFilter, dbPromise } from '../store/useOcclusionStore';
 import { updateLastViewedPage } from '../store/useRecentPdfs';
 import { onSyncResult, requestSync } from '../sync';
+import { useTheme } from '../theme';
+import Icon from './Icon';
 import PdfPage from './PdfPage';
 import ReviewDashboard from './ReviewDashboard';
 
@@ -12,15 +14,27 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 interface PdfViewerProps {
   fileData: ArrayBuffer;
   fileHash: string;
+  fileName: string;
   initialPage?: number;
+  onClose: () => void;
 }
 
-export default function PdfViewer({ fileData, fileHash, initialPage }: PdfViewerProps) {
+// Swatches for the sub-bar legend, in grade-key order.
+const GRADE_LEGEND: [string, string][] = [
+  ['New', 'var(--mask-ungraded)'],
+  ['Easy', 'var(--grade-easy)'],
+  ['OK', 'var(--grade-ok)'],
+  ['Hard', 'var(--grade-hard)'],
+  ['Impossible', 'var(--grade-impossible)'],
+];
+
+export default function PdfViewer({ fileData, fileHash, fileName, initialPage, onClose }: PdfViewerProps) {
   const [pdfDocument, setPdfDocument] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
   const [numPages, setNumPages] = useState<number>(0);
   const [zoom, setZoom] = useState<number>(2.3);
   const [drawMode, setDrawMode] = useState<boolean>(false);
-  const [darkMode, setDarkMode] = useState<boolean>(false);
+  const [theme, toggleTheme] = useTheme();
+  const darkMode = theme === 'dark';
   const [showDashboard, setShowDashboard] = useState<boolean>(false);
   const [reviewFilter, setReviewFilter] = useState<ReviewFilter>('all');
   const [syncState, setSyncState] = useState<'idle' | 'syncing' | 'failed'>('idle');
@@ -245,12 +259,17 @@ export default function PdfViewer({ fileData, fileHash, initialPage }: PdfViewer
     setTimeout(jumpTo, 0);
   };
 
-  const renderOutline = (items: any[]) => items.map((item, idx) => (
-    <div key={idx} style={{ paddingLeft: '10px' }}>
-      <div className="toc-item" onClick={() => scrollToPage(item.dest)}>
+  const renderOutline = (items: any[], depth = 0) => items.map((item, idx) => (
+    <div key={idx}>
+      <div
+        className={`toc-item ${depth === 0 ? 'top' : ''}`}
+        style={{ paddingLeft: `${10 + depth * 14}px` }}
+        title={item.title}
+        onClick={() => scrollToPage(item.dest)}
+      >
         {item.title}
       </div>
-      {item.items && item.items.length > 0 && renderOutline(item.items)}
+      {item.items && item.items.length > 0 && renderOutline(item.items, depth + 1)}
     </div>
   ));
 
@@ -269,124 +288,162 @@ export default function PdfViewer({ fileData, fileHash, initialPage }: PdfViewer
 
   const liveBookmarks = bookmarks.filter(b => !b.is_deleted);
 
+  const syncLabel = syncState === 'syncing' ? 'Syncing…' : syncState === 'failed' ? 'Sync failed' : 'Sync';
+
   return (
-    <div className={`pdf-viewer-overlay ${darkMode ? 'dark-mode' : ''}`}>
+    <div className="pdf-viewer-overlay">
       {showDashboard && (
         <ReviewDashboard
           fileHash={fileHash}
+          fileName={fileName}
           onClose={() => setShowDashboard(false)}
           onJumpToPage={handleJumpToPage}
         />
       )}
       <div className="toolbar">
-        <div className="toolbar-title">PDF Occlusion Engine ({numPages} pages)</div>
-        <button
-          className={`mode-btn ${isSidebarCollapsed ? '' : 'active'}`}
-          onClick={() => setIsSidebarCollapsed(prev => !prev)}
-          aria-expanded={!isSidebarCollapsed}
-          aria-controls="document-outline"
-        >
-          {isSidebarCollapsed ? '☰ Outline' : '← Hide outline'}
-        </button>
-        <div className="mode-controls">
-          <button
-            className={`mode-btn ${drawMode ? 'active' : ''}`}
-            onClick={() => setDrawMode(prev => !prev)}
-          >
-            {drawMode ? '✏️ Draw Mode' : '👁️ Review Mode'}
+        <div className="toolbar-group">
+          <button className="tb-btn" onClick={onClose} title="Back to library" aria-label="Back to library">
+            <Icon name="arrowLeft" />
           </button>
           <button
-            className={`mode-btn ${darkMode ? 'active' : ''}`}
-            onClick={() => setDarkMode(prev => !prev)}
+            className={`tb-btn ${isSidebarCollapsed ? '' : 'active'}`}
+            onClick={() => setIsSidebarCollapsed(prev => !prev)}
+            aria-expanded={!isSidebarCollapsed}
+            aria-controls="document-outline"
+            aria-label={isSidebarCollapsed ? 'Show outline' : 'Hide outline'}
+            title={isSidebarCollapsed ? 'Show outline' : 'Hide outline'}
           >
-            {darkMode ? '☀️ Light' : '🌙 Dark'}
+            <Icon name="panel" />
           </button>
         </div>
-        <div className="history-controls">
-          <button onClick={undo} disabled={historyIndex < 0}>Undo</button>
-          <button onClick={redo} disabled={historyIndex >= historyLength - 1}>Redo</button>
+        <div className="toolbar-title" title={fileName}>
+          <strong>{fileName}</strong>
+          <span>{numPages} pages</span>
         </div>
-        <div className="share-controls">
+        <div className="toolbar-spacer" />
+        <div className="segmented" role="group" aria-label="Mode">
+          <button aria-pressed={!drawMode} onClick={() => setDrawMode(false)} title="Review mode (D)">
+            <Icon name="eye" size={14} />Review
+          </button>
+          <button className="draw" aria-pressed={drawMode} onClick={() => setDrawMode(true)} title="Draw mode (D)">
+            <Icon name="pencil" size={14} />Draw
+          </button>
+        </div>
+        <div className="toolbar-divider" />
+        <div className="toolbar-group history-controls">
+          <button className="tb-btn" onClick={undo} disabled={historyIndex < 0} aria-label="Undo" title="Undo (Ctrl+Z)">
+            <Icon name="undo" />
+          </button>
+          <button className="tb-btn" onClick={redo} disabled={historyIndex >= historyLength - 1} aria-label="Redo" title="Redo (Ctrl+Y)">
+            <Icon name="redo" />
+          </button>
+        </div>
+        <div className="toolbar-divider" />
+        <div className="toolbar-group zoom-controls">
+          <button className="tb-btn" onClick={() => setZoom(z => Math.max(0.5, z - 0.2))} aria-label="Zoom out" title="Zoom out">
+            <Icon name="minus" />
+          </button>
+          <span className="zoom-value">{Math.round(zoom * 100)}%</span>
+          <button className="tb-btn" onClick={() => setZoom(z => Math.min(5.0, z + 0.2))} aria-label="Zoom in" title="Zoom in">
+            <Icon name="plus" />
+          </button>
+        </div>
+        <div className="toolbar-divider" />
+        <div className="toolbar-group share-controls">
           <button
             onClick={handleSync}
-            className="mode-btn"
+            className={`tb-btn ${syncState}`}
             disabled={syncState === 'syncing'}
-            title={syncState === 'failed' ? 'Could not reach the backend. Changes are saved locally and will sync automatically.' : undefined}
+            aria-label={syncLabel}
+            title={syncState === 'failed' ? 'Could not reach the backend. Changes are saved locally and will sync automatically.' : 'Sync now (also runs every 10 seconds)'}
           >
-            {syncState === 'syncing' ? '🔄 Syncing…' : syncState === 'failed' ? '⚠️ Sync failed' : '🔄 Sync'}
+            <Icon name={syncState === 'failed' ? 'warning' : 'refresh'} />
+            <span className="tb-label">{syncLabel}</span>
           </button>
-          <button
-            className="mode-btn"
-            onClick={() => setShowDashboard(true)}
-          >
-            📊 Dashboard
+          <button className="tb-btn" onClick={() => setShowDashboard(true)} aria-label="Dashboard" title="Review dashboard">
+            <Icon name="chart" />
+            <span className="tb-label">Dashboard</span>
           </button>
-          <button onClick={handleExport}>Export</button>
-          <label className="import-btn">
-            Import
+          <button className="tb-btn" onClick={handleExport} aria-label="Export" title="Export masks as JSON">
+            <Icon name="download" />
+            <span className="tb-label">Export</span>
+          </button>
+          <label className="tb-btn" title="Import masks from JSON">
+            <Icon name="upload" />
+            <span className="tb-label">Import</span>
             <input type="file" accept="application/json" onChange={handleImport} style={{ display: 'none' }} />
           </label>
         </div>
-        <div className="zoom-controls">
-          <button onClick={() => setZoom(z => Math.max(0.5, z - 0.2))}>-</button>
-          <span>{Math.round(zoom * 100)}%</span>
-          <button onClick={() => setZoom(z => Math.min(5.0, z + 0.2))}>+</button>
-        </div>
+        <div className="toolbar-divider" />
+        <button
+          className="tb-btn"
+          onClick={toggleTheme}
+          aria-label={darkMode ? 'Light mode' : 'Dark mode'}
+          title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+        >
+          <Icon name={darkMode ? 'sun' : 'moon'} />
+        </button>
       </div>
-      {!drawMode && (
-        <div className="reveal-controls-banner">
+      {drawMode ? (
+        <div className="subbar draw">
+          <Icon name="pencil" size={14} />
+          <strong>Draw mode</strong>
+          <span className="hint-sep">·</span>
+          <span>Drag to add a mask</span>
+          <span className="hint-sep">·</span>
+          <span><kbd>Shift</kbd> + drag to select</span>
+          <span className="hint-sep">·</span>
+          <span><kbd>Del</kbd> deletes the selection</span>
+          <span className="hint-sep">·</span>
+          <span><kbd>D</kbd> back to review</span>
+        </div>
+      ) : (
+        <div className="subbar">
           <button
             id="reveal-page-btn"
             className={`reveal-btn ${revealAllPages.has(visiblePage) ? 'active' : ''}`}
             onClick={() => toggleRevealAllForPage(visiblePage)}
           >
-            👁️ Reveal Page {visiblePage}
+            <Icon name="eye" size={14} />Reveal Page {visiblePage}
           </button>
           <button
             id="reveal-all-btn"
             className={`reveal-btn ${revealAllDocument ? 'active' : ''}`}
             onClick={toggleRevealAllForDocument}
           >
-            👁️‍🗨️ Reveal All Pages
+            <Icon name="eye" size={14} />Reveal All Pages
           </button>
           <div className="filter-control">
-            <label htmlFor="review-filter-select" style={{ color: '#94a3b8', fontSize: '0.85rem', marginRight: '6px' }}>
-              Filter:
-            </label>
+            <label htmlFor="review-filter-select">Show</label>
             <select
               id="review-filter-select"
+              className="filter-select"
               value={reviewFilter}
               onChange={e => setReviewFilter(e.target.value as ReviewFilter)}
-              style={{
-                background: '#1e293b',
-                color: '#e2e8f0',
-                border: '1px solid #334155',
-                borderRadius: '6px',
-                padding: '4px 8px',
-                fontSize: '0.85rem',
-                cursor: 'pointer',
-              }}
             >
               <option value="all">All masks</option>
-              <option value="ungraded">⬛ Ungraded</option>
-              <option value="easy">🟢 Easy</option>
-              <option value="ok">🔵 OK</option>
-              <option value="hard">🟠 Hard</option>
-              <option value="impossible">🔴 Impossible</option>
+              <option value="ungraded">New (ungraded)</option>
+              <option value="easy">Easy</option>
+              <option value="ok">OK</option>
+              <option value="hard">Hard</option>
+              <option value="impossible">Impossible</option>
             </select>
           </div>
-        </div>
-      )}
-      {drawMode && (
-        <div className="draw-mode-banner">
-          DRAW MODE ACTIVE — Click and drag to create occlusions. Press <kbd>D</kbd> to switch back to Review Mode.
+          <div className="grade-legend" aria-hidden="true">
+            {GRADE_LEGEND.map(([label, color]) => (
+              <span key={label}>
+                <i className="swatch" style={{ ['--swatch' as string]: color }} />
+                {label}
+              </span>
+            ))}
+          </div>
         </div>
       )}
       <div className="pdf-layout">
         {!isSidebarCollapsed && (
           <div id="document-outline" className="sidebar">
             <div className="sidebar-header">
-              <div className="sidebar-title">Document outline</div>
+              <div className="sidebar-title">Outline</div>
             </div>
             <div className="sidebar-tabs">
               <button
@@ -409,7 +466,7 @@ export default function PdfViewer({ fileData, fileHash, initialPage }: PdfViewer
               {activeTab === 'bookmarks' && (
                 liveBookmarks.length > 0 ? liveBookmarks.map(b => (
                   <div key={b.id} className="bookmark-item" onClick={() => scrollToPage(null, b.page_index)}>
-                    ⭐ {b.title}
+                    <span className="star">★</span>{b.title}
                   </div>
                 )) : <div className="sidebar-empty">No bookmarks added</div>
               )}

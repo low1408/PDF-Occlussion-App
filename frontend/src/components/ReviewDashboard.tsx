@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { API_URL } from '../api';
 import { requestSync } from '../sync';
+import Icon from './Icon';
 
 interface DashboardCard {
   id: string;
@@ -12,33 +13,43 @@ interface DashboardCard {
   repetitions: number | null;
   next_review_at: string | null;
   last_grade: string | null;
-  review_count: number;
+  review_count: number | string; // COUNT(*) arrives from Postgres as a string
 }
 
 interface ReviewDashboardProps {
   fileHash: string;
+  fileName: string;
   onClose: () => void;
   onJumpToPage: (pageIndex: number) => void;
 }
 
-const GRADE_COLORS: Record<string, string> = {
-  easy:       '#22c55e',
-  ok:         '#3b82f6',
-  hard:       '#f59e0b',
-  impossible: '#ef4444',
-};
+interface CardStyle {
+  swatch: string;
+  text: string;
+  label: string;
+}
 
-function formatDueDate(dateStr: string | null): { label: string; color: string } {
-  if (!dateStr) return { label: 'Never reviewed', color: '#94a3b8' };
+// Colours per last grade, from the theme tokens in index.css.
+const GRADE_STYLES: Record<string, CardStyle> = {
+  easy:       { swatch: 'var(--grade-easy)', text: 'var(--grade-easy-text)', label: 'Easy' },
+  ok:         { swatch: 'var(--grade-ok)', text: 'var(--grade-ok-text)', label: 'OK' },
+  hard:       { swatch: 'var(--grade-hard)', text: 'var(--grade-hard-text)', label: 'Hard' },
+  impossible: { swatch: 'var(--grade-impossible)', text: 'var(--grade-impossible-text)', label: 'Impossible' },
+};
+const NEW_STYLE: CardStyle = { swatch: 'var(--mask-ungraded)', text: 'var(--text-muted)', label: 'New' };
+const HIGHLIGHT_STYLE: CardStyle = { swatch: 'var(--highlight-border)', text: 'var(--grade-hard-text)', label: 'Highlight' };
+
+function formatDueDate(dateStr: string | null): { label: string; tone: 'overdue' | 'soon' | 'later' | 'never' } {
+  if (!dateStr) return { label: 'Never reviewed', tone: 'never' };
   const due = new Date(dateStr);
   const now = new Date();
   const diffMs = due.getTime() - now.getTime();
   const diffDays = Math.round(diffMs / (1000 * 60 * 60 * 24));
 
-  if (diffDays < 0)  return { label: `Overdue ${Math.abs(diffDays)}d`, color: '#ef4444' };
-  if (diffDays === 0) return { label: 'Due today', color: '#f59e0b' };
-  if (diffDays === 1) return { label: 'Due tomorrow', color: '#f59e0b' };
-  return { label: `Due in ${diffDays}d`, color: '#22c55e' };
+  if (diffDays < 0)  return { label: `Overdue ${Math.abs(diffDays)}d`, tone: 'overdue' };
+  if (diffDays === 0) return { label: 'Due today', tone: 'soon' };
+  if (diffDays === 1) return { label: 'Due tomorrow', tone: 'soon' };
+  return { label: `Due in ${diffDays}d`, tone: 'later' };
 }
 
 const parseNote = (noteStr?: string | null): { text: string; type: 'occlusion' | 'highlight' } => {
@@ -48,11 +59,13 @@ const parseNote = (noteStr?: string | null): { text: string; type: 'occlusion' |
     if (parsed && typeof parsed === 'object' && parsed.type === 'highlight') {
       return { text: parsed.text || '', type: 'highlight' };
     }
-  } catch (e) {}
+  } catch {
+    // plain-text note
+  }
   return { text: noteStr, type: 'occlusion' };
 };
 
-export default function ReviewDashboard({ fileHash, onClose, onJumpToPage }: ReviewDashboardProps) {
+export default function ReviewDashboard({ fileHash, fileName, onClose, onJumpToPage }: ReviewDashboardProps) {
   const [cards, setCards] = useState<DashboardCard[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -75,6 +88,15 @@ export default function ReviewDashboard({ fileHash, onClose, onJumpToPage }: Rev
       });
   }, [fileHash]);
 
+  // Escape closes the dashboard.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [onClose]);
+
   const filtered = cards
     .filter(c => {
       const noteInfo = parseNote(c.note);
@@ -96,195 +118,146 @@ export default function ReviewDashboard({ fileHash, onClose, onJumpToPage }: Rev
   const masks = cards.filter(c => parseNote(c.note).type !== 'highlight');
   const dueNow = masks.filter(c => !c.next_review_at || new Date(c.next_review_at) <= new Date()).length;
   const neverReviewed = masks.filter(c => !c.next_review_at).length;
+  const totalReviews = masks.reduce((sum, c) => sum + Number(c.review_count || 0), 0);
+  const distribution: [CardStyle, number][] = [
+    [NEW_STYLE, masks.filter(c => !c.last_grade).length],
+    ...Object.entries(GRADE_STYLES).map(([grade, style]): [CardStyle, number] => [style, masks.filter(c => c.last_grade === grade).length]),
+  ];
 
   return (
-    <div style={{
-      position: 'fixed', inset: 0, zIndex: 10000,
-      background: 'rgba(0,0,0,0.85)',
-      display: 'flex', flexDirection: 'column',
-      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-    }}>
-      {/* Header */}
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: '16px',
-        padding: '16px 24px', background: '#0f172a',
-        borderBottom: '1px solid #1e293b', flexShrink: 0,
-      }}>
-        <div style={{ fontSize: '1.4rem', fontWeight: 700, color: '#f1f5f9' }}>
-          📊 SRS Dashboard
+    <div className="dashboard" role="dialog" aria-label="Review dashboard">
+      <div className="dashboard-header">
+        <div>
+          <h2>Review dashboard</h2>
+          <div className="subtitle">{fileName}</div>
         </div>
-        <div style={{ display: 'flex', gap: '12px', marginLeft: '8px' }}>
-          <span style={{ background: '#ef4444', color: '#fff', borderRadius: '8px', padding: '2px 10px', fontSize: '0.85rem', fontWeight: 600 }}>
-            {dueNow} due
-          </span>
-          <span style={{ background: '#475569', color: '#cbd5e1', borderRadius: '8px', padding: '2px 10px', fontSize: '0.85rem' }}>
-            {cards.length} total
-          </span>
-          {neverReviewed > 0 && (
-            <span style={{ background: '#1e293b', color: '#94a3b8', borderRadius: '8px', padding: '2px 10px', fontSize: '0.85rem' }}>
-              {neverReviewed} new
-            </span>
-          )}
-        </div>
-
-        {/* Controls */}
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: '12px', alignItems: 'center' }}>
-          <input
-            placeholder="🔍 Search by note or page..."
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            style={{
-              background: '#1e293b', border: '1px solid #334155', color: '#f1f5f9',
-              borderRadius: '8px', padding: '6px 12px', fontSize: '0.9rem', width: '220px',
-            }}
-          />
+        <div className="dashboard-controls">
+          <label className="search-field">
+            <Icon name="search" size={14} />
+            <input
+              placeholder="Search notes or pages"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+            />
+          </label>
           <select
+            className="filter-select"
             value={sortBy}
-            onChange={e => setSortBy(e.target.value as any)}
-            style={{
-              background: '#1e293b', border: '1px solid #334155', color: '#f1f5f9',
-              borderRadius: '8px', padding: '6px 10px', fontSize: '0.9rem',
-            }}
+            onChange={e => setSortBy(e.target.value as 'due' | 'page' | 'reps')}
+            aria-label="Sort cards"
           >
-            <option value="due">Sort: Due date</option>
-            <option value="page">Sort: Page</option>
-            <option value="reps">Sort: Repetitions</option>
+            <option value="due">Sort by due date</option>
+            <option value="page">Sort by page</option>
+            <option value="reps">Sort by repetitions</option>
           </select>
-          <button
-            onClick={onClose}
-            style={{
-              background: '#334155', color: '#f1f5f9', border: 'none',
-              borderRadius: '8px', padding: '6px 16px', cursor: 'pointer',
-              fontSize: '0.95rem', fontWeight: 600,
-            }}
-          >
-            ✕ Close
+          <button className="btn" onClick={onClose}>
+            <Icon name="x" size={14} />
+            Close
           </button>
         </div>
       </div>
 
-      {/* Content */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: '24px' }}>
-        {loading && (
-          <div style={{ color: '#94a3b8', textAlign: 'center', marginTop: '60px', fontSize: '1.1rem' }}>
-            Loading cards...
-          </div>
-        )}
-        {error && (
-          <div style={{ color: '#ef4444', textAlign: 'center', marginTop: '60px', fontSize: '1rem' }}>
-            {error}
-          </div>
-        )}
-        {!loading && !error && filtered.length === 0 && (
-          <div style={{ color: '#64748b', textAlign: 'center', marginTop: '60px', fontSize: '1rem' }}>
-            {cards.length === 0
-              ? 'No masks yet. Press D to switch to Draw Mode and drag over the text you want to hide.'
-              : 'No cards match your search.'}
-          </div>
-        )}
-        {!loading && !error && (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '16px' }}>
-            {filtered.map(card => {
-              const { label: dueLabel, color: dueColor } = formatDueDate(card.next_review_at);
-              const noteInfo = parseNote(card.note);
-              const isHighlight = noteInfo.type === 'highlight';
+      <div className="dashboard-body">
+        <div className="dashboard-inner">
+          {loading && <div className="dash-message">Loading cards…</div>}
+          {error && <div className="dash-message error">{error}</div>}
+          {!loading && !error && (
+            <>
+              <div className="stat-tiles">
+                <StatTile label="Due now" value={dueNow} className="due" />
+                <StatTile label="New" value={neverReviewed} />
+                <StatTile label="Masks" value={masks.length} />
+                <StatTile label="Reviews logged" value={totalReviews} />
+              </div>
 
-              return (
-                <div
-                  key={card.id}
-                  style={{
-                    background: '#1e293b', borderRadius: '12px',
-                    border: '1px solid #334155', padding: '18px',
-                    display: 'flex', flexDirection: 'column', gap: '10px',
-                    transition: 'border-color 0.15s',
-                  }}
-                  onMouseEnter={e => (e.currentTarget.style.borderColor = '#60a5fa')}
-                  onMouseLeave={e => (e.currentTarget.style.borderColor = '#334155')}
-                >
-                  {/* Top row */}
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                    <span style={{ color: '#94a3b8', fontSize: '0.82rem', fontWeight: 600, letterSpacing: '0.05em' }}>
-                      PAGE {card.page_index}
-                    </span>
-                    {isHighlight && (
-                      <span style={{
-                        background: 'rgba(234, 179, 8, 0.2)',
-                        color: '#fbbf24',
-                        border: '1px solid rgba(234, 179, 8, 0.4)',
-                        borderRadius: '6px', padding: '2px 8px',
-                        fontSize: '0.78rem', fontWeight: 700, textTransform: 'uppercase',
-                      }}>
-                        Highlight
-                      </span>
-                    )}
-                    {!isHighlight && card.last_grade && (
-                      <span style={{
-                        background: GRADE_COLORS[card.last_grade] + '22',
-                        color: GRADE_COLORS[card.last_grade],
-                        border: `1px solid ${GRADE_COLORS[card.last_grade]}55`,
-                        borderRadius: '6px', padding: '2px 8px',
-                        fontSize: '0.78rem', fontWeight: 700, textTransform: 'uppercase',
-                      }}>
-                        {card.last_grade}
-                      </span>
-                    )}
-                    {!isHighlight && !card.last_grade && (
-                      <span style={{ color: '#475569', fontSize: '0.78rem' }}>New card</span>
-                    )}
+              {masks.length > 0 && (
+                <div className="grade-distribution">
+                  <div className="title">Masks by last grade</div>
+                  <div className="bar">
+                    {distribution.filter(([, n]) => n > 0).map(([style, n]) => (
+                      <span key={style.label} style={{ flexGrow: n, ['--swatch' as string]: style.swatch }} title={`${style.label}: ${n}`} />
+                    ))}
                   </div>
-
-                  {/* Note */}
-                  <div style={{
-                    color: noteInfo.text ? '#e2e8f0' : '#475569',
-                    fontSize: '0.95rem', minHeight: '40px',
-                    fontStyle: noteInfo.text ? 'normal' : 'italic',
-                  }}>
-                    {noteInfo.text || 'No note'}
-                  </div>
-
-                  {/* Stats row */}
-                  {!isHighlight && (
-                    <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-                      <StatPill label="Ease" value={card.ease_factor ? card.ease_factor.toFixed(2) : '—'} />
-                      <StatPill label="Interval" value={card.interval_days != null ? `${card.interval_days}d` : '—'} />
-                      <StatPill label="Reviews" value={String(card.review_count)} />
-                    </div>
-                  )}
-
-                  {/* Due date + jump button */}
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' }}>
-                    <span style={{ color: dueColor, fontSize: '0.85rem', fontWeight: 600 }}>
-                      {!isHighlight && `⏰ ${dueLabel}`}
-                    </span>
-                    <button
-                      onClick={() => { onJumpToPage(card.page_index); onClose(); }}
-                      style={{
-                        background: '#3b82f6', color: '#fff', border: 'none',
-                        borderRadius: '8px', padding: '5px 14px',
-                        cursor: 'pointer', fontSize: '0.85rem', fontWeight: 600,
-                      }}
-                    >
-                      Go to page →
-                    </button>
+                  <div className="legend">
+                    {distribution.map(([style, n]) => (
+                      <span key={style.label}>
+                        <i className="swatch" style={{ ['--swatch' as string]: style.swatch }} />
+                        {style.label} {n}
+                      </span>
+                    ))}
                   </div>
                 </div>
-              );
-            })}
-          </div>
-        )}
+              )}
+
+              {filtered.length === 0 ? (
+                <div className="dash-message">
+                  {cards.length === 0
+                    ? 'No masks yet. Press D to switch to Draw Mode and drag over the text you want to hide.'
+                    : 'No cards match your search.'}
+                </div>
+              ) : (
+                <div className="dash-grid">
+                  {filtered.map(card => {
+                    const { label: dueLabel, tone } = formatDueDate(card.next_review_at);
+                    const noteInfo = parseNote(card.note);
+                    const isHighlight = noteInfo.type === 'highlight';
+                    const style = isHighlight ? HIGHLIGHT_STYLE : GRADE_STYLES[card.last_grade ?? ''] ?? NEW_STYLE;
+
+                    return (
+                      <div key={card.id} className="dash-card" style={{ ['--swatch' as string]: style.swatch }}>
+                        <div className="dash-card-top">
+                          <span className="dash-page">PAGE {card.page_index}</span>
+                          <span className="grade-badge" style={{ ['--badge-text' as string]: style.text }}>{style.label}</span>
+                        </div>
+
+                        <div className={`dash-note ${noteInfo.text ? '' : 'empty'}`}>
+                          {noteInfo.text || 'No note'}
+                        </div>
+
+                        {!isHighlight && (
+                          <div className="stat-pills">
+                            <StatPill label="Ease" value={card.ease_factor ? card.ease_factor.toFixed(2) : '—'} />
+                            <StatPill label="Interval" value={card.interval_days != null ? `${card.interval_days}d` : '—'} />
+                            <StatPill label="Reviews" value={String(card.review_count)} />
+                          </div>
+                        )}
+
+                        <div className="dash-card-footer">
+                          <span className={`due-label ${tone}`}>{!isHighlight && dueLabel}</span>
+                          <button
+                            className="btn btn-sm btn-primary"
+                            onClick={() => { onJumpToPage(card.page_index); onClose(); }}
+                          >
+                            Go to page →
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          )}
+        </div>
       </div>
+    </div>
+  );
+}
+
+function StatTile({ label, value, className = '' }: { label: string; value: number; className?: string }) {
+  return (
+    <div className={`stat-tile ${className}`}>
+      <div className="label">{label}</div>
+      <div className="value">{value}</div>
     </div>
   );
 }
 
 function StatPill({ label, value }: { label: string; value: string }) {
   return (
-    <div style={{
-      background: '#0f172a', borderRadius: '6px', padding: '3px 10px',
-      display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: '52px',
-    }}>
-      <span style={{ color: '#64748b', fontSize: '0.7rem', fontWeight: 600, textTransform: 'uppercase' }}>{label}</span>
-      <span style={{ color: '#94a3b8', fontSize: '0.9rem', fontWeight: 700 }}>{value}</span>
+    <div className="stat-pill">
+      <span className="label">{label}</span>
+      <span className="value">{value}</span>
     </div>
   );
 }
