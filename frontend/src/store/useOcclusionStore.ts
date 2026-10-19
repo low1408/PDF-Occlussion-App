@@ -1,6 +1,5 @@
 import { create } from 'zustand';
 import { openDB, DBSchema, IDBPDatabase } from 'idb';
-import { API_URL } from '../api';
 
 export interface Box {
   id: string;
@@ -49,6 +48,29 @@ export type ReviewFilter =
   | 'impossible';
 
 export type SrsGrade = 'easy' | 'ok' | 'hard' | 'impossible';
+
+/** A graded review queued in IndexedDB until the backend has logged it. */
+export interface PendingReview {
+  id: string;              // also the backend's srs_reviews id, so a resend can't log it twice
+  occlusion_id: string;
+  document_id: string;
+  grade: SrsGrade;
+  reviewed_at: string;
+  // Card state after this review. The backend stores it as-is, so a review sent
+  // after an offline spell keeps the schedule it was graded with.
+  ease_factor: number;
+  interval_days: number;
+  repetitions: number;
+  next_review_at: string;
+  last_modified: number;
+}
+
+/** A document's records fetched from the backend, already in local shape. */
+export interface RemoteSnapshot {
+  boxes: Box[];
+  bookmarks: Bookmark[];
+  srsCards: SrsCard[];
+}
 
 const GRADE_MAP: Record<SrsGrade, number> = { easy: 5, ok: 3, hard: 1, impossible: 0 };
 
@@ -116,6 +138,19 @@ function applyPatches(boxes: Box[], patches: HistoryPatch[], side: 'oldRef' | 'n
   return { boxes: next, changed };
 }
 
+/** Take each remote record that is newer than its local copy, or has none. */
+function mergeNewer<T>(local: T[], remote: T[], key: (item: T) => string, modifiedAt: (item: T) => number) {
+  const merged = new Map(local.map(item => [key(item), item]));
+  const changed: T[] = [];
+  for (const item of remote) {
+    const existing = merged.get(key(item));
+    if (existing && modifiedAt(existing) >= modifiedAt(item)) continue;
+    merged.set(key(item), item);
+    changed.push(item);
+  }
+  return { merged: [...merged.values()], changed };
+}
+
 export interface RecentPdfEntry {
   fileHash: string;
   fileName: string;
@@ -147,12 +182,16 @@ interface OcclusionDB extends DBSchema {
     value: RecentPdfEntry;
     indexes: { 'by-lastOpened': number };
   };
+  pending_reviews: {
+    key: string;
+    value: PendingReview;
+  };
 }
 
 export let dbPromise: Promise<IDBPDatabase<OcclusionDB>> | null = null;
 let idbQueue: Promise<void> = Promise.resolve();
 if (typeof window !== 'undefined') {
-  dbPromise = openDB<OcclusionDB>('occlusion_engine', 4, {
+  dbPromise = openDB<OcclusionDB>('occlusion_engine', 5, {
     upgrade(db, oldVersion) {
       if (oldVersion < 1) {
         const store = db.createObjectStore('occlusions', { keyPath: 'id' });
@@ -170,11 +209,15 @@ if (typeof window !== 'undefined') {
         const recentStore = db.createObjectStore('recent_pdfs', { keyPath: 'fileHash' });
         recentStore.createIndex('by-lastOpened', 'lastOpenedAt');
       }
+      if (oldVersion < 5) {
+        db.createObjectStore('pending_reviews', { keyPath: 'id' });
+      }
     },
   });
 }
 
 interface State {
+  documentId: string | null;   // file hash of the open document
   boxes: Box[];
   history: PatchGroup[];
   historyIndex: number;
@@ -189,6 +232,7 @@ interface State {
   activeReviewPage: number | null;
 
   loadBoxesForDocument: (documentId: string) => Promise<void>;
+  mergeRemote: (documentId: string, remote: RemoteSnapshot) => void;
   addBox: (box: Box) => void;
   updateBox: (id: string, updates: Partial<Box>) => void;
   updateBoxNote: (id: string, note: string) => void;
@@ -204,10 +248,11 @@ interface State {
   setActiveReviewPage: (pageIndex: number) => void;
 
   _saveToIDB: (boxesToSave: Box[]) => Promise<void>;
-  _saveSrsCardToIDB: (card: SrsCard) => Promise<void>;
+  _saveReviewToIDB: (card: SrsCard, review: PendingReview) => Promise<void>;
 }
 
 export const useOcclusionStore = create<State>((set, get) => ({
+  documentId: null,
   boxes: [],
   history: [],
   historyIndex: -1,
@@ -223,7 +268,29 @@ export const useOcclusionStore = create<State>((set, get) => ({
     const allBoxes = await db.getAllFromIndex('occlusions', 'by-doc', documentId);
     const bookmarks = await db.getAllFromIndex('bookmarks', 'by-doc', documentId);
     const srsCards = await db.getAllFromIndex('srs_cards', 'by-doc', documentId);
-    set({ boxes: allBoxes, history: [], historyIndex: -1, bookmarks, srsCards });
+    set({ documentId, boxes: allBoxes, history: [], historyIndex: -1, bookmarks, srsCards });
+  },
+
+  mergeRemote: (documentId: string, remote: RemoteSnapshot) => {
+    const state = get();
+    if (state.documentId !== documentId) return; // another document was opened meanwhile
+
+    const boxes = mergeNewer(state.boxes, remote.boxes, b => b.id, b => b.last_modified);
+    const bookmarks = mergeNewer(state.bookmarks, remote.bookmarks, b => b.id, b => b.last_modified ?? b.created_at);
+    const cards = mergeNewer(state.srsCards, remote.srsCards, c => c.occlusion_id, c => c.last_modified);
+    if (!boxes.changed.length && !bookmarks.changed.length && !cards.changed.length) return;
+
+    set({ boxes: boxes.merged, bookmarks: bookmarks.merged, srsCards: cards.merged });
+    get()._saveToIDB(boxes.changed);
+    if (!dbPromise) return;
+    idbQueue = idbQueue.then(async () => {
+      const db = await dbPromise;
+      if (!db) return;
+      const tx = db.transaction(['bookmarks', 'srs_cards'], 'readwrite');
+      for (const b of bookmarks.changed) tx.objectStore('bookmarks').put(b);
+      for (const c of cards.changed) tx.objectStore('srs_cards').put(c);
+      await tx.done;
+    }).catch(console.error);
   },
 
   _saveToIDB: async (boxesToSave: Box[]) => {
@@ -353,29 +420,20 @@ export const useOcclusionStore = create<State>((set, get) => ({
       set({ srsCards: [...srsCards, updatedCard] });
     }
 
-    // Save to IDB (offline cache)
-    get()._saveSrsCardToIDB(updatedCard);
-
-    // Fire review to backend — creates srs_reviews row and updates srs_cards.
-    // If the occlusion hasn't synced to PostgreSQL yet, the server returns 202
-    // and we retry after 12 seconds (sync worker runs every 10s).
-    const reviewPayload = {
+    // Queue the review in IDB with the card; the sync worker sends it to the backend's
+    // review log and only drops it once the backend has accepted it.
+    get()._saveReviewToIDB(updatedCard, {
+      id: crypto.randomUUID(),
       occlusion_id: occlusionId,
+      document_id: documentId,
       grade,
-      reviewed_at: new Date().toISOString(),
+      reviewed_at: new Date(now).toISOString(),
+      ease_factor: updatedCard.ease_factor,
+      interval_days: updatedCard.interval_days,
+      repetitions: updatedCard.repetitions,
+      next_review_at: updatedCard.next_review_at,
       last_modified: now,
-    };
-    const postReview = () => fetch(`${API_URL}/api/srs/review`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(reviewPayload),
     });
-    postReview().then(async res => {
-      if (res.status === 202) {
-        // Occlusion not in DB yet — retry after sync worker has had a chance to push it
-        setTimeout(() => postReview().catch(err => console.warn('[SRS] Retry failed:', err)), 12000);
-      }
-    }).catch(err => console.warn('[SRS] Failed to sync review to backend:', err));
   },
 
   toggleRevealAllForPage: (pageIndex: number) => {
@@ -402,13 +460,14 @@ export const useOcclusionStore = create<State>((set, get) => ({
     set({ activeReviewPage: pageIndex });
   },
 
-  _saveSrsCardToIDB: async (card: SrsCard) => {
+  _saveReviewToIDB: async (card: SrsCard, review: PendingReview) => {
     if (!dbPromise) return;
     idbQueue = idbQueue.then(async () => {
       const db = await dbPromise;
       if (!db) return;
-      const tx = db.transaction('srs_cards', 'readwrite');
-      tx.store.put(card);
+      const tx = db.transaction(['srs_cards', 'pending_reviews'], 'readwrite');
+      tx.objectStore('srs_cards').put(card);
+      tx.objectStore('pending_reviews').put(review);
       await tx.done;
     }).catch(console.error);
     await idbQueue;

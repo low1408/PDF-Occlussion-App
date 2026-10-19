@@ -364,15 +364,17 @@ app.post('/api/bookmarks/sync', async (req, res) => {
 
 // ---------------------------------------------------------------------------
 // POST /api/srs/review  — record an SRS review grade (transactional)
+//
+// The client sends the card state it computed (ease_factor, interval_days,
+// repetitions, next_review_at); it is stored as-is so a review queued offline
+// keeps the schedule it was graded with. Without it, the server computes it.
+// An optional client `id` makes resending the same review a no-op.
 // ---------------------------------------------------------------------------
 
-const SRS_REVIEW_SCHEMA = {
-  occlusion_id: 'string',
-  grade: 'string',
-};
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 app.post('/api/srs/review', async (req, res) => {
-  const { occlusion_id, grade, reviewed_at, last_modified } = req.body;
+  const { id, occlusion_id, grade, reviewed_at, last_modified } = req.body;
 
   // ---- input validation ----
   if (!occlusion_id || typeof occlusion_id !== 'string') {
@@ -381,7 +383,16 @@ app.post('/api/srs/review', async (req, res) => {
   if (!grade || !GRADE_MAP.hasOwnProperty(grade)) {
     return res.status(400).json({ error: '`grade` must be one of: easy, ok, hard, impossible' });
   }
+  if (id !== undefined && (typeof id !== 'string' || !UUID_RE.test(id))) {
+    return res.status(400).json({ error: '`id` must be a UUID' });
+  }
   const ts = typeof last_modified === 'number' ? last_modified : Date.now();
+  const { ease_factor, interval_days, repetitions, next_review_at } = req.body;
+  const clientState =
+    [ease_factor, interval_days, repetitions].every(v => typeof v === 'number') &&
+    typeof next_review_at === 'string'
+      ? { ease_factor, interval_days, repetitions, next_review_at }
+      : null;
 
   const client = await pool.connect();
   try {
@@ -398,16 +409,18 @@ app.post('/api/srs/review', async (req, res) => {
       return res.status(202).json({ queued: true, message: 'Occlusion not yet synced; review will be retried.' });
     }
 
-    // Fetch current card state (or defaults for first review)
-    const cardRes = await client.query(
-      'SELECT ease_factor, interval_days, repetitions FROM srs_cards WHERE occlusion_id = $1',
-      [occlusion_id],
-    );
-    const currentCard = cardRes.rows.length > 0
-      ? cardRes.rows[0]
-      : { ease_factor: 2.5, interval_days: 0, repetitions: 0 };
-
-    const newState = computeSrs(currentCard, grade);
+    let newState = clientState;
+    if (!newState) {
+      // Fetch current card state (or defaults for first review)
+      const cardRes = await client.query(
+        'SELECT ease_factor, interval_days, repetitions FROM srs_cards WHERE occlusion_id = $1',
+        [occlusion_id],
+      );
+      const currentCard = cardRes.rows.length > 0
+        ? cardRes.rows[0]
+        : { ease_factor: 2.5, interval_days: 0, repetitions: 0 };
+      newState = computeSrs(currentCard, grade);
+    }
 
     // Upsert srs_cards
     await client.query(
@@ -423,11 +436,12 @@ app.post('/api/srs/review', async (req, res) => {
       [occlusion_id, newState.ease_factor, newState.interval_days, newState.repetitions, newState.next_review_at, ts],
     );
 
-    // Insert review log
+    // Insert review log (skipped if this review id was already logged)
     await client.query(
-      `INSERT INTO srs_reviews (occlusion_id, grade, reviewed_at, ease_factor_after, interval_days_after, last_modified)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [occlusion_id, grade, reviewed_at || new Date().toISOString(), newState.ease_factor, newState.interval_days, ts],
+      `INSERT INTO srs_reviews (id, occlusion_id, grade, reviewed_at, ease_factor_after, interval_days_after, last_modified)
+       VALUES (COALESCE($1::uuid, uuid_generate_v4()), $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (id) DO NOTHING`,
+      [id ?? null, occlusion_id, grade, reviewed_at || new Date().toISOString(), newState.ease_factor, newState.interval_days, ts],
     );
 
     await client.query('COMMIT');
@@ -462,8 +476,12 @@ app.get('/api/srs/cards/:file_hash', async (req, res) => {
     }
     const documentId = docRes.rows[0].id;
 
+    // Include the review-log summary so a fresh client can colour masks by last grade.
     const srsRes = await pool.query(
-      `SELECT sc.*
+      `SELECT sc.*,
+         (SELECT grade FROM srs_reviews sr WHERE sr.occlusion_id = sc.occlusion_id ORDER BY sr.reviewed_at DESC LIMIT 1) AS last_grade,
+         (SELECT COUNT(*) FROM srs_reviews sr WHERE sr.occlusion_id = sc.occlusion_id)::int AS review_count,
+         EXISTS (SELECT 1 FROM srs_reviews sr WHERE sr.occlusion_id = sc.occlusion_id AND sr.grade = 'impossible') AS ever_impossible
        FROM srs_cards sc
        JOIN occlusions o ON o.id = sc.occlusion_id
        WHERE o.document_id = $1 AND sc.last_modified > $2`,

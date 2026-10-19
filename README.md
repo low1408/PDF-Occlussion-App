@@ -88,7 +88,7 @@ VITE_API_URL=http://localhost:4000
 - `POST /api/bookmarks/sync`
 
 ### Spaced Repetition (SRS)
-- `POST /api/srs/review`
+- `POST /api/srs/review` — logs one review. The client sends the card state it computed (`ease_factor`, `interval_days`, `repetitions`, `next_review_at`), which is stored as-is, and a UUID `id` so resending the same review is a no-op.
 - `GET /api/srs/cards/:file_hash?since=TIMESTAMP`
 - `POST /api/srs/sync`
 - `GET /api/dashboard/:file_hash`
@@ -99,6 +99,8 @@ VITE_API_URL=http://localhost:4000
 - The backend verifies DB connectivity at startup and exits with a helpful message if the schema isn’t initialized.
 - Frontend uses Vite + React with TypeScript and Zustand for state management.
 - Edits are saved to IndexedDB first, then a sync worker pushes them to the backend every 10 seconds and when the tab is hidden. Deletions (including undoing a new mask) are stored as tombstones (`is_deleted`) so they sync too.
+- Grades are queued in IndexedDB and stay queued until the backend has logged them, so grading works offline.
+- Opening a document pulls its masks, bookmarks and SRS cards from the backend and keeps whichever copy of each record was modified last, so a second browser picks up your work.
 
 ## Contributing
 Pull requests and issues are welcome. Please include context, reproduction steps, and screenshots where helpful.

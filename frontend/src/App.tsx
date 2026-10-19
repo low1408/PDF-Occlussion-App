@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react';
-import * as pdfjsLib from 'pdfjs-dist';
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
+// pdf.js's legacy build carries polyfills; the modern build needs very recent browsers
+// (e.g. Map#getOrInsertComputed) and paints blank pages elsewhere.
+import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
+import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.mjs?url';
 import { useOcclusionStore, RecentPdfEntry } from './store/useOcclusionStore';
 import { loadRecents, saveRecent, loadPdfData, deleteRecent, RecentPdfMeta } from './store/useRecentPdfs';
 import PdfViewer from './components/PdfViewer';
-import { startAutoSync } from './sync';
+import { pullFromServer, startAutoSync } from './sync';
 import './index.css';
 
 // Ensure worker is configured before any getDocument call in this module
@@ -39,7 +41,8 @@ function App() {
 
   useEffect(() => {
     if (fileHash) {
-      loadBoxesForDocument(fileHash);
+      // Show local data straight away, then fold in anything newer from the backend.
+      loadBoxesForDocument(fileHash).then(() => pullFromServer(fileHash));
     }
   }, [fileHash, loadBoxesForDocument]);
 
@@ -60,27 +63,30 @@ function App() {
     const hashArray = Array.from(new Uint8Array(hashBuffer));
     const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 
+    // Reopening a PDF that's already in recents resumes where it was left.
+    const known = recents.find(r => r.fileHash === hashHex);
+
     // Open the PDF immediately — don't block on caching
     setFileData(buffer);
     setFileHash(hashHex);
-    setInitialPage(undefined);
+    setInitialPage(known?.lastViewedPage);
 
     // Cache in IDB in the background (best-effort).
-    // IMPORTANT: slice the buffer first — pdfjs transfers the ArrayBuffer to its
-    // worker thread (neutering it). Without the clone, the buffer already held by
-    // PdfViewer via setFileData() above would become detached and the PDF would
-    // hang at "Loading PDF…" forever.
+    // pdf.js transfers (detaches) the buffer it's given, so take the copy to store
+    // before handing pdf.js a separate one.
     try {
-      const bufferCopy = buffer.slice(0);
-      const pdf = await pdfjsLib.getDocument(new Uint8Array(bufferCopy)).promise;
+      const pdfData = buffer.slice(0);
+      const pdf = await pdfjsLib.getDocument(new Uint8Array(buffer.slice(0))).promise;
+      const numPages = pdf.numPages;
+      await pdf.destroy(); // only needed the page count
       const entry: RecentPdfEntry = {
         fileHash: hashHex,
         fileName: file.name,
         fileSize: file.size,
-        numPages: pdf.numPages,
-        lastViewedPage: 1,
+        numPages,
+        lastViewedPage: known?.lastViewedPage ?? 1,
         lastOpenedAt: Date.now(),
-        pdfData: bufferCopy.slice(0), // another copy — pdfjs may have transferred bufferCopy to worker
+        pdfData,
       };
       await saveRecent(entry);
     } catch (err) {
@@ -89,6 +95,7 @@ function App() {
   };
 
   const handleOpenRecent = async (meta: RecentPdfMeta) => {
+    if (loadingRecent) return;
     setLoadingRecent(meta.fileHash);
     try {
       const data = await loadPdfData(meta.fileHash);
@@ -133,12 +140,21 @@ function App() {
               </div>
               <div className="recents-list">
                 {recents.map(r => (
-                  <button
+                  // A div, not a <button>: it contains the delete button, and buttons can't nest.
+                  <div
                     key={r.fileHash}
                     className="recent-card"
                     id={`recent-${r.fileHash.substring(0, 8)}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-disabled={loadingRecent === r.fileHash}
                     onClick={() => handleOpenRecent(r)}
-                    disabled={loadingRecent === r.fileHash}
+                    onKeyDown={e => {
+                      if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {
+                        e.preventDefault();
+                        handleOpenRecent(r);
+                      }
+                    }}
                   >
                     <div className="recent-icon">📄</div>
                     <div className="recent-info">
@@ -163,14 +179,14 @@ function App() {
                     {loadingRecent === r.fileHash && (
                       <div className="recent-loading">Loading…</div>
                     )}
-                  </button>
+                  </div>
                 ))}
               </div>
             </div>
           )}
         </div>
       ) : (
-        <PdfViewer fileData={fileData} fileHash={fileHash} initialPage={initialPage} />
+        <PdfViewer key={fileHash} fileData={fileData} fileHash={fileHash} initialPage={initialPage} />
       )}
     </div>
   );

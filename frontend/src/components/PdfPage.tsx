@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import * as pdfjsLib from 'pdfjs-dist';
+import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import 'pdfjs-dist/web/pdf_viewer.css';
 import OcclusionLayer from './OcclusionLayer';
 import { useOcclusionStore, ReviewFilter } from '../store/useOcclusionStore';

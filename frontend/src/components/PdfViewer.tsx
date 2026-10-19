@@ -1,8 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
-import * as pdfjsLib from 'pdfjs-dist';
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
-import { openDB } from 'idb';
-import { useOcclusionStore, ReviewFilter } from '../store/useOcclusionStore';
+import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
+import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.mjs?url';
+import { useOcclusionStore, ReviewFilter, dbPromise } from '../store/useOcclusionStore';
 import { updateLastViewedPage } from '../store/useRecentPdfs';
 import { onSyncResult, requestSync } from '../sync';
 import PdfPage from './PdfPage';
@@ -134,7 +133,8 @@ export default function PdfViewer({ fileData, fileHash, initialPage }: PdfViewer
 
   const handleExport = async () => {
     try {
-      const db = await openDB('occlusion_engine', 4);
+      if (!dbPromise) return;
+      const db = await dbPromise;
       const boxes = (await db.getAllFromIndex('occlusions', 'by-doc', fileHash)).filter(b => !b.is_deleted);
       const blob = new Blob([JSON.stringify(boxes, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
@@ -175,20 +175,28 @@ export default function PdfViewer({ fileData, fileHash, initialPage }: PdfViewer
   };
 
   useEffect(() => {
+    // pdf.js transfers (detaches) the buffer it's given, so hand it a copy: StrictMode runs
+    // this effect twice in development, and the second run still needs fileData intact.
+    const loadingTask = pdfjsLib.getDocument(new Uint8Array(fileData.slice(0)));
+    let cancelled = false;
     const loadPdf = async () => {
       try {
-        const loadingTask = pdfjsLib.getDocument(new Uint8Array(fileData));
         const pdf = await loadingTask.promise;
+        if (cancelled) return;
         setPdfDocument(pdf);
         setNumPages(pdf.numPages);
 
         const out = await pdf.getOutline();
-        setOutline(out || []);
+        if (!cancelled) setOutline(out || []);
       } catch (e) {
-        console.error("Error loading PDF", e);
+        if (!cancelled) console.error("Error loading PDF", e);
       }
     };
     loadPdf();
+    return () => {
+      cancelled = true;
+      loadingTask.destroy(); // frees the document and its worker
+    };
   }, [fileData]);
 
   const scrollToPage = async (dest: any, pageIndex?: number) => {

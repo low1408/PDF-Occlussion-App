@@ -1,4 +1,4 @@
-import { openDB } from 'idb';
+import { openDB, IDBPDatabase } from 'idb';
 import { API_URL } from './api';
 
 // Highest last_modified the backend has accepted, per store and document. Kept in
@@ -45,14 +45,16 @@ async function pushChanges<T extends { document_id: string }>(
 }
 
 async function sync(): Promise<boolean> {
+  let db: IDBPDatabase | null = null;
   try {
-    const db = await openDB('occlusion_engine', 4);
-    const [boxes, bookmarks, cards] = await Promise.all([
+    // No version: open whatever the main thread created (it opens the DB before asking for a sync).
+    db = await openDB('occlusion_engine');
+    const [boxes, bookmarks, cards, reviews] = await Promise.all([
       db.getAll('occlusions'),
       db.getAll('bookmarks'),
       db.getAll('srs_cards'),
+      db.getAll('pending_reviews'),
     ]);
-    db.close();
 
     let sent = 0;
 
@@ -95,6 +97,21 @@ async function sync(): Promise<boolean> {
         })),
       }));
 
+    // Queued reviews go last, oldest first, so their masks are already on the backend.
+    // Each is removed from the queue only once the backend has logged it.
+    reviews.sort((a, b) => a.last_modified - b.last_modified);
+    for (const review of reviews) {
+      const res = await fetch(`${API_URL}/api/srs/review`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(review),
+      });
+      if (res.status === 202) continue; // backend doesn't have the mask yet; retry next sync
+      if (!res.ok) throw new Error(`POST /api/srs/review responded ${res.status}`);
+      await db.delete('pending_reviews', review.id);
+      sent++;
+    }
+
     // Nothing to push: still confirm the backend is reachable so callers get an honest result.
     if (sent === 0) {
       const res = await fetch(`${API_URL}/health`);
@@ -109,6 +126,8 @@ async function sync(): Promise<boolean> {
     if (lastSyncOk) console.warn('[Sync] Sync failed; will keep retrying:', err);
     lastSyncOk = false;
     return false;
+  } finally {
+    db?.close();
   }
 }
 
