@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { openDB, DBSchema, IDBPDatabase } from 'idb';
+import { API_URL } from '../api';
 
 export interface Box {
   id: string;
@@ -17,6 +18,9 @@ export interface Bookmark {
   page_index: number;
   title: string;
   created_at: number;
+  // Optional because bookmarks saved before soft-delete existed don't have them.
+  is_deleted?: boolean;
+  last_modified?: number;
 }
 
 export interface SrsCard {
@@ -88,6 +92,30 @@ export interface PatchGroup {
   patches: HistoryPatch[];
 }
 
+/**
+ * Apply one side of a patch group (oldRef for undo, newRef for redo).
+ * Touched boxes get a fresh last_modified so the backend's last-write-wins upsert
+ * accepts them, and a box that shouldn't exist is tombstoned rather than removed
+ * so the deletion still reaches the backend.
+ */
+function applyPatches(boxes: Box[], patches: HistoryPatch[], side: 'oldRef' | 'newRef') {
+  const now = Date.now();
+  const next = [...boxes];
+  const changed: Box[] = [];
+  for (const p of patches) {
+    const idx = next.findIndex(b => b.id === p.id);
+    const target = p[side];
+    const box = target
+      ? { ...target, last_modified: now }
+      : idx >= 0 ? { ...next[idx], is_deleted: true, last_modified: now } : null;
+    if (!box) continue;
+    if (idx >= 0) next[idx] = box;
+    else next.push(box);
+    changed.push(box);
+  }
+  return { boxes: next, changed };
+}
+
 export interface RecentPdfEntry {
   fileHash: string;
   fileName: string;
@@ -157,6 +185,9 @@ interface State {
   revealAllPages: Set<number>;   // page indices with all occlusions revealed
   revealAllDocument: boolean;     // true = every page is revealed
 
+  // Page whose masks answer review-mode keys (null until a page is shown)
+  activeReviewPage: number | null;
+
   loadBoxesForDocument: (documentId: string) => Promise<void>;
   addBox: (box: Box) => void;
   updateBox: (id: string, updates: Partial<Box>) => void;
@@ -170,9 +201,9 @@ interface State {
 
   toggleRevealAllForPage: (pageIndex: number) => void;
   toggleRevealAllForDocument: () => void;
+  setActiveReviewPage: (pageIndex: number) => void;
 
   _saveToIDB: (boxesToSave: Box[]) => Promise<void>;
-  _deleteFromIDB: (boxIds: string[]) => Promise<void>;
   _saveSrsCardToIDB: (card: SrsCard) => Promise<void>;
 }
 
@@ -184,6 +215,7 @@ export const useOcclusionStore = create<State>((set, get) => ({
   srsCards: [],
   revealAllPages: new Set<number>(),
   revealAllDocument: false,
+  activeReviewPage: null,
 
   loadBoxesForDocument: async (documentId: string) => {
     if (!dbPromise) return;
@@ -202,20 +234,6 @@ export const useOcclusionStore = create<State>((set, get) => ({
       const tx = db.transaction('occlusions', 'readwrite');
       for (const b of boxesToSave) {
         tx.store.put(b);
-      }
-      await tx.done;
-    }).catch(console.error);
-    await idbQueue;
-  },
-
-  _deleteFromIDB: async (boxIds: string[]) => {
-    if (!dbPromise || boxIds.length === 0) return;
-    idbQueue = idbQueue.then(async () => {
-      const db = await dbPromise;
-      if (!db) return;
-      const tx = db.transaction('occlusions', 'readwrite');
-      for (const id of boxIds) {
-        tx.store.delete(id);
       }
       await tx.done;
     }).catch(console.error);
@@ -270,32 +288,15 @@ export const useOcclusionStore = create<State>((set, get) => ({
   },
 
   updateBoxNote: (id: string, note: string) => {
+    // The note popover saves on every blur; skip unchanged notes so they don't add empty undo steps.
+    const box = get().boxes.find(b => b.id === id);
+    if (!box || (box.note ?? '') === note) return;
     get().updateBox(id, { note });
   },
 
+  // Soft delete: the sync worker pushes the tombstone to the backend.
   deleteBox: (id: string) => {
     get().updateBox(id, { is_deleted: true });
-
-    // Immediately sync the deletion to the backend (don't wait for the 10s sync interval)
-    const box = get().boxes.find(b => b.id === id);
-    if (box) {
-      const payload = {
-        file_hash: box.document_id,
-        occlusions: [{
-          id: box.id,
-          page_index: box.page_index,
-          bounding_box: box.pdfRect,
-          note: box.note ?? null,
-          is_deleted: true,
-          last_modified: box.last_modified,
-        }],
-      };
-      fetch('http://localhost:3000/api/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      }).catch(err => console.warn('[deleteBox] Failed to sync deletion to backend:', err));
-    }
   },
 
   toggleBookmark: async (documentId: string, pageIndex: number, title: string = `Page ${pageIndex}`) => {
@@ -303,23 +304,22 @@ export const useOcclusionStore = create<State>((set, get) => ({
     const db = await dbPromise;
     const { bookmarks } = get();
     const existing = bookmarks.find(b => b.page_index === pageIndex);
+    const now = Date.now();
 
-    if (existing) {
-      // Remove
-      await db.delete('bookmarks', existing.id);
-      set({ bookmarks: bookmarks.filter(b => b.id !== existing.id) });
-    } else {
-      // Add
-      const newBm: Bookmark = {
-        id: crypto.randomUUID(),
-        document_id: documentId,
-        page_index: pageIndex,
-        title,
-        created_at: Date.now()
-      };
-      await db.put('bookmarks', newBm);
-      set({ bookmarks: [...bookmarks, newBm] });
-    }
+    // Soft-delete (and revive) rather than removing the row, so the sync worker can push removals.
+    const updated: Bookmark = existing
+      ? { ...existing, is_deleted: !existing.is_deleted, last_modified: now }
+      : {
+          id: crypto.randomUUID(),
+          document_id: documentId,
+          page_index: pageIndex,
+          title,
+          created_at: now,
+          is_deleted: false,
+          last_modified: now,
+        };
+    set({ bookmarks: existing ? bookmarks.map(b => (b.id === existing.id ? updated : b)) : [...bookmarks, updated] });
+    await db.put('bookmarks', updated);
   },
 
   recordGrade: (occlusionId: string, documentId: string, grade: SrsGrade) => {
@@ -365,7 +365,7 @@ export const useOcclusionStore = create<State>((set, get) => ({
       reviewed_at: new Date().toISOString(),
       last_modified: now,
     };
-    const postReview = () => fetch('http://localhost:3000/api/srs/review', {
+    const postReview = () => fetch(`${API_URL}/api/srs/review`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(reviewPayload),
@@ -398,6 +398,10 @@ export const useOcclusionStore = create<State>((set, get) => ({
     }));
   },
 
+  setActiveReviewPage: (pageIndex: number) => {
+    set({ activeReviewPage: pageIndex });
+  },
+
   _saveSrsCardToIDB: async (card: SrsCard) => {
     if (!dbPromise) return;
     idbQueue = idbQueue.then(async () => {
@@ -411,64 +415,25 @@ export const useOcclusionStore = create<State>((set, get) => ({
   },
 
   undo: () => {
-    let diffToSave: Box[] = [];
-    let diffToDelete: string[] = [];
+    let changed: Box[] = [];
     set((state) => {
       if (state.historyIndex < 0) return state;
-      const patchGroup = state.history[state.historyIndex];
-      const newIndex = state.historyIndex - 1;
-
-      let newBoxes = [...state.boxes];
-      for (const p of patchGroup.patches) {
-        if (p.oldRef) {
-          const idx = newBoxes.findIndex(b => b.id === p.id);
-          if (idx >= 0) {
-            newBoxes[idx] = p.oldRef;
-          } else {
-            newBoxes.push(p.oldRef);
-          }
-          diffToSave.push(p.oldRef);
-        } else {
-          newBoxes = newBoxes.filter(b => b.id !== p.id);
-          diffToDelete.push(p.id);
-        }
-      }
-
-      return { boxes: newBoxes, historyIndex: newIndex };
+      const result = applyPatches(state.boxes, state.history[state.historyIndex].patches, 'oldRef');
+      changed = result.changed;
+      return { boxes: result.boxes, historyIndex: state.historyIndex - 1 };
     });
-    
-    if (diffToSave.length > 0) get()._saveToIDB(diffToSave);
-    if (diffToDelete.length > 0) get()._deleteFromIDB(diffToDelete);
+    get()._saveToIDB(changed);
   },
 
   redo: () => {
-    let diffToSave: Box[] = [];
-    let diffToDelete: string[] = [];
+    let changed: Box[] = [];
     set((state) => {
       if (state.historyIndex >= state.history.length - 1) return state;
       const newIndex = state.historyIndex + 1;
-      const patchGroup = state.history[newIndex];
-
-      let newBoxes = [...state.boxes];
-      for (const p of patchGroup.patches) {
-        if (p.newRef) {
-          const idx = newBoxes.findIndex(b => b.id === p.id);
-          if (idx >= 0) {
-            newBoxes[idx] = p.newRef;
-          } else {
-            newBoxes.push(p.newRef);
-          }
-          diffToSave.push(p.newRef);
-        } else {
-          newBoxes = newBoxes.filter(b => b.id !== p.id);
-          diffToDelete.push(p.id);
-        }
-      }
-
-      return { boxes: newBoxes, historyIndex: newIndex };
+      const result = applyPatches(state.boxes, state.history[newIndex].patches, 'newRef');
+      changed = result.changed;
+      return { boxes: result.boxes, historyIndex: newIndex };
     });
-    
-    if (diffToSave.length > 0) get()._saveToIDB(diffToSave);
-    if (diffToDelete.length > 0) get()._deleteFromIDB(diffToDelete);
+    get()._saveToIDB(changed);
   }
 }));

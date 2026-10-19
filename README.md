@@ -69,6 +69,11 @@ npm run dev
 
 Vite will print the local dev URL.
 
+The frontend expects the backend at `http://localhost:3000`. To point it elsewhere, set `VITE_API_URL` in `frontend/.env.local`:
+```bash
+VITE_API_URL=http://localhost:4000
+```
+
 ## API Overview
 
 ### Health
@@ -93,6 +98,7 @@ Vite will print the local dev URL.
 ## Development Notes
 - The backend verifies DB connectivity at startup and exits with a helpful message if the schema isn’t initialized.
 - Frontend uses Vite + React with TypeScript and Zustand for state management.
+- Edits are saved to IndexedDB first, then a sync worker pushes them to the backend every 10 seconds and when the tab is hidden. Deletions (including undoing a new mask) are stored as tombstones (`is_deleted`) so they sync too.
 
 ## Contributing
 Pull requests and issues are welcome. Please include context, reproduction steps, and screenshots where helpful.

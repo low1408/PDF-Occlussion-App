@@ -4,6 +4,7 @@ import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import { openDB } from 'idb';
 import { useOcclusionStore, ReviewFilter } from '../store/useOcclusionStore';
 import { updateLastViewedPage } from '../store/useRecentPdfs';
+import { onSyncResult, requestSync } from '../sync';
 import PdfPage from './PdfPage';
 import ReviewDashboard from './ReviewDashboard';
 
@@ -13,10 +14,9 @@ interface PdfViewerProps {
   fileData: ArrayBuffer;
   fileHash: string;
   initialPage?: number;
-  onSync: () => void;
 }
 
-export default function PdfViewer({ fileData, fileHash, initialPage, onSync }: PdfViewerProps) {
+export default function PdfViewer({ fileData, fileHash, initialPage }: PdfViewerProps) {
   const [pdfDocument, setPdfDocument] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
   const [numPages, setNumPages] = useState<number>(0);
   const [zoom, setZoom] = useState<number>(2.3);
@@ -24,6 +24,7 @@ export default function PdfViewer({ fileData, fileHash, initialPage, onSync }: P
   const [darkMode, setDarkMode] = useState<boolean>(false);
   const [showDashboard, setShowDashboard] = useState<boolean>(false);
   const [reviewFilter, setReviewFilter] = useState<ReviewFilter>('all');
+  const [syncState, setSyncState] = useState<'idle' | 'syncing' | 'failed'>('idle');
   const containerRef = useRef<HTMLDivElement>(null);
 
   const [outline, setOutline] = useState<any[]>([]);
@@ -39,6 +40,7 @@ export default function PdfViewer({ fileData, fileHash, initialPage, onSync }: P
 
   const toggleRevealAllForPage = useOcclusionStore(state => state.toggleRevealAllForPage);
   const toggleRevealAllForDocument = useOcclusionStore(state => state.toggleRevealAllForDocument);
+  const setActiveReviewPage = useOcclusionStore(state => state.setActiveReviewPage);
   const revealAllDocument = useOcclusionStore(state => state.revealAllDocument);
   const revealAllPages = useOcclusionStore(state => state.revealAllPages);
 
@@ -69,25 +71,20 @@ export default function PdfViewer({ fileData, fileHash, initialPage, onSync }: P
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [undo, redo]);
 
-  // Track which page is most visible via IntersectionObserver
+  // Track the page under the viewer's vertical midpoint. The zero-height root band
+  // means at most one page intersects it at a time, so a page that is only peeking
+  // in at the edge never counts as the visible one.
   useEffect(() => {
     const container = containerRef.current;
     if (!container || numPages === 0) return;
 
     const observer = new IntersectionObserver(
       (entries) => {
-        let maxRatio = 0;
-        let maxPage = visiblePage;
         for (const entry of entries) {
-          if (entry.intersectionRatio > maxRatio) {
-            maxRatio = entry.intersectionRatio;
-            const idx = Array.from(container.children).indexOf(entry.target as HTMLElement);
-            if (idx >= 0) maxPage = idx + 1;
-          }
+          if (entry.isIntersecting) setVisiblePage(Number((entry.target as HTMLElement).dataset.pageIndex));
         }
-        if (maxRatio > 0) setVisiblePage(maxPage);
       },
-      { root: container, threshold: [0, 0.25, 0.5, 0.75, 1] }
+      { root: container, rootMargin: '-50% 0px -50% 0px' }
     );
 
     // Defer observation so children are mounted
@@ -101,7 +98,15 @@ export default function PdfViewer({ fileData, fileHash, initialPage, onSync }: P
       clearTimeout(timer);
       observer.disconnect();
     };
-  }, [numPages, containerRef.current]);
+  }, [numPages]);
+
+  // Reflect automatic syncs too, so the button shows when the backend goes away or comes back.
+  useEffect(() => onSyncResult(ok => setSyncState(ok ? 'idle' : 'failed')), []);
+
+  // Review-mode keys follow the page being read (a click on another page also claims them).
+  useEffect(() => {
+    setActiveReviewPage(visiblePage);
+  }, [visiblePage, setActiveReviewPage]);
 
   // Debounced save of the currently visible page to IDB (for resume-on-reopen)
   useEffect(() => {
@@ -130,7 +135,7 @@ export default function PdfViewer({ fileData, fileHash, initialPage, onSync }: P
   const handleExport = async () => {
     try {
       const db = await openDB('occlusion_engine', 4);
-      const boxes = await db.getAllFromIndex('occlusions', 'by-doc', fileHash);
+      const boxes = (await db.getAllFromIndex('occlusions', 'by-doc', fileHash)).filter(b => !b.is_deleted);
       const blob = new Blob([JSON.stringify(boxes, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -249,6 +254,13 @@ export default function PdfViewer({ fileData, fileHash, initialPage, onSync }: P
     scrollToPage(null, pageIndex);
   };
 
+  const handleSync = () => {
+    setSyncState('syncing');
+    void requestSync();
+  };
+
+  const liveBookmarks = bookmarks.filter(b => !b.is_deleted);
+
   return (
     <div className={`pdf-viewer-overlay ${darkMode ? 'dark-mode' : ''}`}>
       {showDashboard && (
@@ -283,12 +295,17 @@ export default function PdfViewer({ fileData, fileHash, initialPage, onSync }: P
           </button>
         </div>
         <div className="history-controls">
-          <button onClick={undo} disabled={historyIndex <= 0}>Undo</button>
+          <button onClick={undo} disabled={historyIndex < 0}>Undo</button>
           <button onClick={redo} disabled={historyIndex >= historyLength - 1}>Redo</button>
         </div>
         <div className="share-controls">
-          <button onClick={onSync} className="mode-btn">
-            🔄 Sync
+          <button
+            onClick={handleSync}
+            className="mode-btn"
+            disabled={syncState === 'syncing'}
+            title={syncState === 'failed' ? 'Could not reach the backend. Changes are saved locally and will sync automatically.' : undefined}
+          >
+            {syncState === 'syncing' ? '🔄 Syncing…' : syncState === 'failed' ? '⚠️ Sync failed' : '🔄 Sync'}
           </button>
           <button
             className="mode-btn"
@@ -382,7 +399,7 @@ export default function PdfViewer({ fileData, fileHash, initialPage, onSync }: P
                 outline.length > 0 ? renderOutline(outline) : <div className="sidebar-empty">No chapters found</div>
               )}
               {activeTab === 'bookmarks' && (
-                bookmarks.length > 0 ? bookmarks.map(b => (
+                liveBookmarks.length > 0 ? liveBookmarks.map(b => (
                   <div key={b.id} className="bookmark-item" onClick={() => scrollToPage(null, b.page_index)}>
                     ⭐ {b.title}
                   </div>

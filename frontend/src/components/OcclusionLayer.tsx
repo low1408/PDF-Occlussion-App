@@ -41,6 +41,9 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
   const recordGrade = useOcclusionStore(state => state.recordGrade);
   const srsCards = useOcclusionStore(state => state.srsCards);
   const updateBoxNote = useOcclusionStore(state => state.updateBoxNote);
+  // Every page mounts a layer, but only the active one may answer review keys.
+  const ownsKeyboard = useOcclusionStore(state => state.activeReviewPage === pageIndex);
+  const setActiveReviewPage = useOcclusionStore(state => state.setActiveReviewPage);
 
   const boxes = allBoxes.filter(b => b.document_id === fileHash && b.page_index === pageIndex);
 
@@ -141,6 +144,24 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
     }
   }, [navigableBoxes.length, focusedBoxIndex]);
 
+  // Drop focus, reveal and selection when another page becomes active, so only one
+  // page ever shows a grade bar or hint bar.
+  useEffect(() => {
+    if (ownsKeyboard) return;
+    setFocusedBoxIndex(null);
+    setRevealedBoxId(null);
+    setSelectedBoxIds(prev => (prev.size > 0 ? new Set() : prev));
+  }, [ownsKeyboard]);
+
+  // Keep the keyboard-focused mask on screen; on a tall page it can be outside the viewport.
+  const focusedBoxId = focusedBox?.id;
+  useEffect(() => {
+    if (!ownsKeyboard || !focusedBoxId) return;
+    containerRef.current
+      ?.querySelector(`[data-box-id="${focusedBoxId}"]`)
+      ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [ownsKeyboard, focusedBoxId]);
+
   // Advance focus to the next navigable box and hide the current reveal.
   const advanceFocus = (currentIndex: number | null) => {
     if (navigableBoxes.length === 0) return;
@@ -154,6 +175,7 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
       // Don't fire when typing in an input
       if ((e.target as HTMLElement)?.tagName === 'INPUT' ||
           (e.target as HTMLElement)?.tagName === 'TEXTAREA') return;
+      if (!ownsKeyboard) return;
 
       // --- Delete selected masks (works in both modes) ---
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedBoxIds.size > 0) {
@@ -223,7 +245,7 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedBoxIds, deleteBox, drawMode, sortedBoxes, navigableBoxes, focusedBox, focusedBoxIndex, revealedBoxId, recordGrade, fileHash]);
+  }, [ownsKeyboard, selectedBoxIds, deleteBox, drawMode, sortedBoxes, navigableBoxes, focusedBox, focusedBoxIndex, revealedBoxId, recordGrade, fileHash]);
 
   // Hook up event delegation on the parent container (.pdf-page-wrapper)
   useEffect(() => {
@@ -239,6 +261,9 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
     };
 
     const handlePointerDown = (e: PointerEvent) => {
+      // Interacting with a page hands it the review keys, even if it isn't the one centred in view.
+      setActiveReviewPage(pageIndex);
+
       const target = e.target as HTMLElement;
       // The tooltip button must survive pointerdown so its click handler can run.
       if (target.closest('.selection-tooltip')) return;
@@ -443,7 +468,7 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
       parent.removeEventListener('pointerup', handlePointerUp);
       parent.removeEventListener('click', handleParentClick);
     };
-  }, [viewport, fileHash, pageIndex, addBox]);
+  }, [viewport, fileHash, pageIndex, addBox, setActiveReviewPage]);
 
   const handleCreateHighlight = () => {
     if (!selectionTooltip) return;
@@ -528,6 +553,7 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
 
   // Show a "0 matches" hint when a filter is active but no masks qualify on this page.
   const shouldShowFilterEmptyHint =
+    ownsKeyboard &&
     !drawMode &&
     reviewFilter !== 'all' &&
     navigableBoxes.length === 0 &&
@@ -592,7 +618,7 @@ export default function OcclusionLayer({ viewport, pageIndex, fileHash, drawMode
         };
 
         return (
-          <div key={box.id} style={{ position: 'absolute', left: `${x}px`, top: `${y}px`, width: `${w}px`, height: `${h}px` }}>
+          <div key={box.id} data-box-id={box.id} style={{ position: 'absolute', left: `${x}px`, top: `${y}px`, width: `${w}px`, height: `${h}px` }}>
             <div
               className={`${isHighlight ? 'highlight-overlay' : 'occlusion-box'} ${isRevealed ? 'revealed' : ''} ${isSelected ? 'selected' : ''} ${isFocused && !isRevealed ? 'focused' : ''}`}
               onClick={(e) => handleBoxClick(e, box.id)}

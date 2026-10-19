@@ -1,9 +1,10 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import { useOcclusionStore, RecentPdfEntry } from './store/useOcclusionStore';
 import { loadRecents, saveRecent, loadPdfData, deleteRecent, RecentPdfMeta } from './store/useRecentPdfs';
 import PdfViewer from './components/PdfViewer';
+import { startAutoSync } from './sync';
 import './index.css';
 
 // Ensure worker is configured before any getDocument call in this module
@@ -47,17 +48,7 @@ function App() {
     loadRecents().then(setRecents).catch(console.error);
   }, []);
 
-  const workerRef = useRef<Worker | null>(null);
-
-  useEffect(() => {
-    const worker = new Worker(new URL('./syncWorker.ts', import.meta.url), { type: 'module' });
-    workerRef.current = worker;
-    return () => worker.terminate();
-  }, []);
-
-  const handleSync = () => {
-    workerRef.current?.postMessage('sync');
-  };
+  useEffect(() => startAutoSync(), []);
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -179,7 +170,7 @@ function App() {
           )}
         </div>
       ) : (
-        <PdfViewer fileData={fileData} fileHash={fileHash} initialPage={initialPage} onSync={handleSync} />
+        <PdfViewer fileData={fileData} fileHash={fileHash} initialPage={initialPage} />
       )}
     </div>
   );

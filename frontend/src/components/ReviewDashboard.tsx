@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+import { API_URL } from '../api';
+import { requestSync } from '../sync';
 
 interface DashboardCard {
   id: string;
@@ -59,13 +61,15 @@ export default function ReviewDashboard({ fileHash, onClose, onJumpToPage }: Rev
 
   useEffect(() => {
     setLoading(true);
-    fetch(`http://localhost:3000/api/dashboard/${fileHash}`)
+    // Push local edits first so the dashboard never shows stale or undone masks.
+    requestSync()
+      .then(() => fetch(`${API_URL}/api/dashboard/${fileHash}`))
       .then(r => r.json())
       .then(data => {
         setCards(data.cards ?? []);
         setLoading(false);
       })
-      .catch(_err => {
+      .catch(() => {
         setError('Could not load dashboard — is the backend running?');
         setLoading(false);
       });
@@ -88,8 +92,10 @@ export default function ReviewDashboard({ fileHash, onClose, onJumpToPage }: Rev
       return 0;
     });
 
-  const dueNow = cards.filter(c => !c.next_review_at || new Date(c.next_review_at) <= new Date()).length;
-  const neverReviewed = cards.filter(c => !c.next_review_at).length;
+  // Highlights are never reviewed, so they don't count as due or new.
+  const masks = cards.filter(c => parseNote(c.note).type !== 'highlight');
+  const dueNow = masks.filter(c => !c.next_review_at || new Date(c.next_review_at) <= new Date()).length;
+  const neverReviewed = masks.filter(c => !c.next_review_at).length;
 
   return (
     <div style={{
@@ -172,7 +178,7 @@ export default function ReviewDashboard({ fileHash, onClose, onJumpToPage }: Rev
         {!loading && !error && filtered.length === 0 && (
           <div style={{ color: '#64748b', textAlign: 'center', marginTop: '60px', fontSize: '1rem' }}>
             {cards.length === 0
-              ? 'No occlusions synced to backend yet. Make sure the server is running and wait 10s for the sync.'
+              ? 'No masks yet. Press D to switch to Draw Mode and drag over the text you want to hide.'
               : 'No cards match your search.'}
           </div>
         )}

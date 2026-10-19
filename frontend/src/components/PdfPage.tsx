@@ -29,7 +29,7 @@ export default function PdfPage({ pageIndex, pdfDocument, scale, fileHash, drawM
 
   const bookmarks = useOcclusionStore(state => state.bookmarks);
   const toggleBookmark = useOcclusionStore(state => state.toggleBookmark);
-  const isBookmarked = bookmarks.some(b => b.document_id === fileHash && b.page_index === pageIndex);
+  const isBookmarked = bookmarks.some(b => b.document_id === fileHash && b.page_index === pageIndex && !b.is_deleted);
 
   const revealAllPages = useOcclusionStore(state => state.revealAllPages);
   const revealAllDocument = useOcclusionStore(state => state.revealAllDocument);
@@ -159,6 +159,7 @@ export default function PdfPage({ pageIndex, pdfDocument, scale, fileHash, drawM
     <div 
       ref={containerRef} 
       className="pdf-page-wrapper"
+      data-page-index={pageIndex}
       style={{ 
         width: containerWidth ? `${containerWidth}px` : '100%', 
         height: containerHeight ? `${containerHeight}px` : '800px',
